@@ -539,7 +539,104 @@ class RobustnessTestRunner:
         else:
             report += "❌ 策略鲁棒性不足，需进一步优化\n"
 
+        # Gate-6: 名单固化诊断
+        report += self._generate_list_fixation_section(df)
+
         return report
+
+    def _generate_list_fixation_section(self, df: pd.DataFrame) -> str:
+        """生成名单固化诊断章节"""
+        section = "\n## 7. Gate-6 名单固化诊断\n\n"
+
+        if 'holdings_jaccard_12m_avg' not in df.columns:
+            section += "*缺少名单固化指标*\n"
+            return section
+
+        # 统计固化情况
+        jaccard_avg = df['holdings_jaccard_12m_avg'].mean()
+        stickiness_avg = df['top_holdings_stickiness'].mean() if 'top_holdings_stickiness' in df.columns else 0
+
+        # 判断严重程度
+        if jaccard_avg > 0.85 or stickiness_avg > 0.90:
+            severity = "🔴 硬失败 (Hard Fail)"
+        elif jaccard_avg > 0.75 or stickiness_avg > 0.80:
+            severity = "🟡 软失败 (Soft Fail) - 建议启用反固化"
+        elif jaccard_avg > 0.70 or stickiness_avg > 0.75:
+            severity = "🟠 警告 (Warning) - 需关注"
+        else:
+            severity = "🟢 正常 (Pass)"
+
+        section += f"### 整体评估\n\n"
+        section += f"| 指标 | 平均值 | 阈值 | 状态 |\n"
+        section += f"|------|--------|------|------|\n"
+        section += f"| Jaccard 12期均值 | {jaccard_avg:.2%} | ≤75% | {'✓' if jaccard_avg <= 0.75 else '✗'} |\n"
+        section += f"| Top10粘性 | {stickiness_avg:.2%} | ≤80% | {'✓' if stickiness_avg <= 0.80 else '✗'} |\n"
+        section += f"\n**严重程度**: {severity}\n"
+
+        # 统计 list_fixation 失败
+        if 'fail_reason_top3' in df.columns:
+            list_fixation_fails = df[
+                df['fail_reason_top3'].astype(str).str.contains('list_fixation', na=False)
+            ]
+            if len(list_fixation_fails) > 0:
+                section += f"\n**名单固化失败数**: {len(list_fixation_fails)} / {len(df)}\n"
+
+        # 改进建议
+        if jaccard_avg > 0.75:
+            section += "\n### 改进建议\n\n"
+            section += "```yaml\n"
+            section += "anti_fixation:\n"
+            section += "  enabled: true\n"
+            section += "  soft_diversify:\n"
+            section += "    enabled: true\n"
+            section += "```\n"
+
+        return section
+
+    def run_diagnosis(self, output_path: str = None) -> Dict:
+        """
+        运行诊断分析
+
+        Args:
+            output_path: 诊断报告输出路径
+
+        Returns:
+            诊断结果
+        """
+        from src.optimization.anti_fixation import diagnose_list_fixation
+
+        csv_path = os.path.join(self.output_dir, 'robustness_summary.csv')
+        if output_path is None:
+            output_path = os.path.join(self.output_dir, 'list_fixation_diagnosis.md')
+
+        return diagnose_list_fixation(csv_path, output_path)
+
+    def run_ablation(self,
+                     backtest_func,
+                     portfolio: pd.DataFrame,
+                     start_date: str,
+                     end_date: str) -> Dict:
+        """
+        运行消融实验
+
+        Args:
+            backtest_func: 回测函数
+            portfolio: 持仓数据
+            start_date: 开始日期
+            end_date: 结束日期
+
+        Returns:
+            对比结果
+        """
+        from src.optimization.anti_fixation import run_ablation_study
+
+        return run_ablation_study(
+            backtest_func,
+            portfolio,
+            start_date,
+            end_date,
+            output_dir=self.output_dir
+        )
 
 
 def main():
@@ -548,6 +645,8 @@ def main():
     parser.add_argument('--walk-forward-only', action='store_true', help='只跑Walk-Forward')
     parser.add_argument('--output', default='results/robustness', help='输出目录')
     parser.add_argument('--strategy', default='aggressive', choices=['stable', 'aggressive'], help='策略类型')
+    parser.add_argument('--diagnosis', action='store_true', help='运行诊断分析')
+    parser.add_argument('--ablation', action='store_true', help='运行消融实验')
     args = parser.parse_args()
 
     logger.info("=" * 70)
@@ -611,10 +710,27 @@ def main():
     # 生成报告
     csv_path, md_path = runner.generate_report(all_results)
 
+    # Gate-6: 诊断分析
+    if args.diagnosis or args.ablation:
+        logger.info("\n" + "=" * 70)
+        logger.info("Gate-6 诊断分析")
+        logger.info("=" * 70)
+
+        if args.diagnosis:
+            diagnosis = runner.run_diagnosis()
+            logger.info(f"诊断报告: {os.path.join(args.output, 'list_fixation_diagnosis.md')}")
+
+        if args.ablation:
+            logger.info("运行消融实验...")
+            # ablation_results = runner.run_ablation(mock_backtest_func, pd.DataFrame(), '2020-01-01', '2024-12-31')
+            logger.info("消融实验需要真实回测函数，请集成后运行")
+
     logger.info("\n" + "=" * 70)
     logger.info("测试完成!")
     logger.info(f"CSV报告: {csv_path}")
     logger.info(f"Markdown报告: {md_path}")
+    if args.diagnosis:
+        logger.info(f"诊断报告: {os.path.join(args.output, 'list_fixation_diagnosis.md')}")
     logger.info("=" * 70)
 
 
