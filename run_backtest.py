@@ -295,6 +295,16 @@ def build_factor_data(fetcher: LocalDataFetcher, codes: List[str], eval_date: st
     volatility_df = fetcher.get_volatility(codes, eval_date)
     print(f"    计算完成 {len(volatility_df)} 只股票")
 
+    # 尝试从 akshare 缓存补充财务数据
+    akshare_df = pd.DataFrame()
+    akshare_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'financial_data_akshare.csv')
+    if os.path.exists(akshare_path):
+        print("  从 financial_data_akshare.csv 补充财务数据...")
+        akshare_df = pd.read_csv(akshare_path)
+        akshare_df['code'] = akshare_df['code'].astype(str).str.zfill(6)
+        akshare_df = akshare_df[akshare_df['code'].isin(codes)].drop_duplicates(subset=['code'], keep='first')
+        print(f"    akshare 覆盖: {len(akshare_df)} 只股票")
+
     # 合并所有数据
     factor_df = pd.DataFrame({'code': codes})
 
@@ -318,6 +328,35 @@ def build_factor_data(fetcher: LocalDataFetcher, codes: List[str], eval_date: st
     else:
         factor_df['net_profit_yoy'] = np.nan
         factor_df['revenue_yoy'] = np.nan
+
+    # 用 akshare 数据填补 ClickHouse 缺失
+    if not akshare_df.empty:
+        ak_dict = akshare_df.set_index('code')
+        for idx, row in factor_df.iterrows():
+            code = row['code']
+            if code not in ak_dict.index:
+                continue
+            ak_row = ak_dict.loc[code]
+            # ROE: akshare 优先（更完整）
+            if pd.isna(row.get('roe')) or row.get('roe', 0) == 0:
+                factor_df.at[idx, 'roe'] = ak_row.get('roe', np.nan)
+            # EPS
+            if pd.isna(row.get('eps')) or row.get('eps', 0) == 0:
+                factor_df.at[idx, 'eps'] = ak_row.get('eps', np.nan)
+            # 净利润增长率
+            if pd.isna(row.get('net_profit_yoy')) or row.get('net_profit_yoy', 0) == 0:
+                factor_df.at[idx, 'net_profit_yoy'] = ak_row.get('net_profit_yoy', np.nan)
+            # 营收增长率
+            if pd.isna(row.get('revenue_yoy')) or row.get('revenue_yoy', 0) == 0:
+                factor_df.at[idx, 'revenue_yoy'] = ak_row.get('revenue_yoy', np.nan)
+            # 毛利率
+            if pd.isna(row.get('gross_profit_margin')) or row.get('gross_profit_margin', 0) == 0:
+                factor_df.at[idx, 'gross_profit_margin'] = ak_row.get('gross_margin', np.nan)
+
+        # 统计覆盖率提升
+        roe_coverage = factor_df['roe'].notna().sum()
+        growth_coverage = factor_df['net_profit_yoy'].notna().sum()
+        print(f"    补充后: ROE覆盖 {roe_coverage}/{len(codes)}, 增长率覆盖 {growth_coverage}/{len(codes)}")
 
     if not market_df.empty:
         factor_df = factor_df.merge(market_df[['code', 'market_cap']], on='code', how='left')
@@ -393,7 +432,24 @@ def build_factor_data(fetcher: LocalDataFetcher, codes: List[str], eval_date: st
         'momentum': 0, 'drawdown_3m': -10, 'volatility': 30, 'cash_flow_ratio': 1.0
     }
     factor_df = factor_df.fillna(defaults)
-    factor_df['roe_stability'] = 80
+
+    # ROE 稳定性: 用 akshare 的 roe_std_3y 计算真实值
+    if not akshare_df.empty and 'roe_std_3y' in akshare_df.columns:
+        roe_std_map = dict(zip(akshare_df['code'], akshare_df['roe_std_3y']))
+        factor_df['roe_stability'] = factor_df['code'].map(roe_std_map)
+        # 标准差越小越稳定, 转成0-100分 (std=0 -> 100, std>=10 -> 50)
+        factor_df['roe_stability'] = factor_df['roe_stability'].apply(
+            lambda x: max(50, 100 - x * 5) if pd.notna(x) else 80
+        )
+    else:
+        factor_df['roe_stability'] = 80
+
+    # 现金流质量: 用 akshare 的 ocfps/eps 比率
+    if not akshare_df.empty and 'ocfps' in akshare_df.columns:
+        ocfps_map = dict(zip(akshare_df['code'], akshare_df['ocfps']))
+        factor_df['cash_flow_ratio'] = factor_df['code'].map(ocfps_map) / factor_df['eps'].replace(0, np.nan)
+        factor_df['cash_flow_ratio'] = factor_df['cash_flow_ratio'].clip(-5, 5).fillna(1.0)
+
     factor_df['profit_growth'] = factor_df['net_profit_yoy']
 
     print(f"  因子数据构建完成: {len(factor_df)} 只股票")
@@ -653,10 +709,10 @@ def main():
         start_date=start_date,
         end_date=end_date,
         strategy_type='stable',
-        tilt_strength=0.3
+        tilt_strength=1.0
     )
 
-    # R5 回测 (进取型: 稍强倾斜)
+    # R5 回测 (进取型: 更强倾斜)
     print("\n" + "=" * 70)
     print("【R5 进取型策略回测】")
     print("=" * 70)
@@ -665,7 +721,7 @@ def main():
         start_date=start_date,
         end_date=end_date,
         strategy_type='aggressive',
-        tilt_strength=0.4
+        tilt_strength=1.0
     )
 
     # 结果对比
