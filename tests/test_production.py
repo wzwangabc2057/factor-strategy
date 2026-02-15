@@ -16,6 +16,11 @@ Gate-5 新增测试:
 10. test_cash_ratio_min_assert - 现金比例断言
 11. test_robustness_pass_fail_fields_present - 鲁棒性输出字段
 
+Gate-6 名单固化测试:
+12. test_universe_builder_liquidity_top_returns_expected_size - 股票池构建
+13. test_list_fixation_metrics_jaccard_range_0_1 - Jaccard范围
+14. test_gate6_list_fixation_fail_when_jaccard_high - 高Jaccard失败
+
 运行:
     pytest tests/test_production.py -v
     或
@@ -580,6 +585,149 @@ class TestDegradationVisibility:
         logger.removeHandler(handler)
 
 
+# ==================== Gate-6: 名单固化测试 ====================
+
+class TestUniverseBuilder:
+    """Gate-6: 股票池构建测试"""
+
+    def test_universe_builder_liquidity_top_returns_expected_size(self):
+        """流动性筛选应返回预期数量股票"""
+        from src.universe.builder import UniverseBuilder
+        import numpy as np
+
+        # 模拟数据
+        np.random.seed(42)
+        dates = pd.date_range('2024-01-01', periods=30).astype(str)
+        codes = [f'{i:06d}' for i in range(1, 501)]
+
+        data = []
+        for date in dates:
+            for code in codes:
+                data.append({
+                    'date': date,
+                    'code': code,
+                    'close': np.random.uniform(10, 100),
+                    'amount': np.random.uniform(1e7, 1e9)
+                })
+
+        price_df = pd.DataFrame(data)
+
+        # 构建
+        builder = UniverseBuilder(config={'source': 'liquidity_top', 'liquidity': {'top_n': 300}})
+        universe = builder.build(price_df, date='2024-01-30')
+
+        assert len(universe) > 0, "股票池不应为空"
+        assert len(universe) <= 300, f"股票池应<=300，实际{len(universe)}"
+
+    def test_universe_config_validation(self):
+        """文件池模式需显式启用"""
+        from src.universe.builder import UniverseBuilder
+
+        # 默认不允许文件池
+        builder = UniverseBuilder(config={
+            'source': 'file',
+            'file': {'allow_file_pool': False, 'path': 'nonexistent.csv'}
+        })
+
+        # 应返回空池或降级
+        universe = builder.build(pd.DataFrame({'date': [], 'code': [], 'close': []}))
+        assert len(universe) == 0 or builder.is_degraded, \
+            "文件池未启用时应返回空池或标记降级"
+
+
+class TestListFixationMetrics:
+    """Gate-6: 名单固化指标测试"""
+
+    def test_list_fixation_metrics_jaccard_range_0_1(self):
+        """Jaccard相似度应在0-1范围"""
+        from src.reporting.metrics import MetricsCalculator
+
+        calculator = MetricsCalculator()
+
+        # 模拟持仓历史（完全不同）
+        holdings_history = [
+            {'A': 0.3, 'B': 0.3, 'C': 0.2, 'D': 0.1, 'E': 0.1},
+            {'F': 0.3, 'G': 0.3, 'H': 0.2, 'I': 0.1, 'J': 0.1},
+            {'K': 0.3, 'L': 0.3, 'M': 0.2, 'N': 0.1, 'O': 0.1},
+        ]
+
+        metrics = calculator.calculate_list_fixation_metrics(holdings_history, top_n=5)
+
+        assert 0.0 <= metrics['holdings_jaccard_1m'] <= 1.0, \
+            f"Jaccard应在0-1之间，实际为{metrics['holdings_jaccard_1m']}"
+        assert 0.0 <= metrics['holdings_jaccard_12m_avg'] <= 1.0, \
+            f"12期平均Jaccard应在0-1之间"
+        assert 0.0 <= metrics['top_holdings_stickiness'] <= 1.0, \
+            f"粘性应在0-1之间"
+
+    def test_list_fixation_metrics_same_holdings(self):
+        """相同持仓应有高Jaccard"""
+        from src.reporting.metrics import MetricsCalculator
+
+        calculator = MetricsCalculator()
+
+        # 模拟完全相同的持仓
+        holdings_history = [
+            {'A': 0.3, 'B': 0.3, 'C': 0.2, 'D': 0.1, 'E': 0.1},
+            {'A': 0.25, 'B': 0.25, 'C': 0.2, 'D': 0.15, 'E': 0.15},
+            {'A': 0.2, 'B': 0.3, 'C': 0.25, 'D': 0.15, 'E': 0.1},
+        ]
+
+        metrics = calculator.calculate_list_fixation_metrics(holdings_history, top_n=5)
+
+        assert metrics['holdings_jaccard_1m'] > 0.9, \
+            f"相同持仓Jaccard应接近1，实际为{metrics['holdings_jaccard_1m']}"
+        assert metrics['top_holdings_stickiness'] > 0.9, \
+            f"相同持仓粘性应接近1"
+
+
+class TestGate6ListFixation:
+    """Gate-6: 名单固化门禁测试"""
+
+    def test_gate6_list_fixation_fail_when_jaccard_high(self):
+        """Jaccard过高应导致Gate-6失败"""
+        from scripts.run_robustness_test import RobustnessTestRunner
+
+        runner = RobustnessTestRunner()
+
+        # 模拟高Jaccard指标
+        high_jaccard_metrics = {
+            'holdings_jaccard_12m_avg': 0.85,  # 超过0.75阈值
+            'top_holdings_stickiness': 0.60,
+            'annual_return': 0.10,
+            'max_drawdown': -0.15,
+            'sharpe': 1.0,
+        }
+
+        passed, fail_reasons = runner._evaluate_pass_criteria(high_jaccard_metrics)
+
+        assert not passed, "Jaccard过高时应失败"
+        assert any('list_fixation' in r for r in fail_reasons), \
+            f"失败原因应包含list_fixation: {fail_reasons}"
+
+    def test_gate6_list_fixation_pass_when_jaccard_low(self):
+        """Jaccard正常应通过Gate-6"""
+        from scripts.run_robustness_test import RobustnessTestRunner
+
+        runner = RobustnessTestRunner()
+
+        # 模拟正常指标
+        normal_metrics = {
+            'holdings_jaccard_12m_avg': 0.50,  # 低于0.75阈值
+            'top_holdings_stickiness': 0.60,   # 低于0.80阈值
+            'annual_return': 0.10,
+            'max_drawdown': -0.15,
+            'sharpe': 1.0,
+        }
+
+        passed, fail_reasons = runner._evaluate_pass_criteria(normal_metrics)
+
+        # 只检查list_fixation相关失败原因
+        list_fixation_failures = [r for r in fail_reasons if 'list_fixation' in r]
+        assert len(list_fixation_failures) == 0, \
+            f"正常指标不应触发list_fixation失败: {list_fixation_failures}"
+
+
 if __name__ == '__main__':
     if HAS_PYTEST:
         pytest.main([__file__, '-v'])
@@ -601,6 +749,10 @@ if __name__ == '__main__':
             TestCashRatioMinAssert,
             TestRobustnessPassFailFields,
             TestDegradationVisibility,
+            # Gate-6: 名单固化测试
+            TestUniverseBuilder,
+            TestListFixationMetrics,
+            TestGate6ListFixation,
         ]
 
         passed = 0

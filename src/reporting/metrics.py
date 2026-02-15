@@ -267,6 +267,105 @@ class MetricsCalculator:
             'n_positions': len(weights)
         }
 
+    def calculate_list_fixation_metrics(self,
+                                         holdings_history: List[Dict[str, float]],
+                                         top_n: int = 30) -> Dict:
+        """
+        Gate-6: 计算名单固化指标
+
+        Args:
+            holdings_history: 历史持仓列表，每个元素为 {code: weight} 字典
+            top_n: 计算Jaccard时使用的TopN持仓数
+
+        Returns:
+            名单固化指标字典
+        """
+        if not holdings_history or len(holdings_history) < 2:
+            return {
+                'holdings_jaccard_1m': 0.0,
+                'holdings_jaccard_12m_avg': 0.0,
+                'top_holdings_stickiness': 0.0,
+                'universe_size': 0,
+                'selected_size': 0,
+            }
+
+        # 计算每期Jaccard相似度
+        jaccard_scores = []
+        top10_sets = []
+
+        for i in range(1, len(holdings_history)):
+            prev_holdings = holdings_history[i - 1]
+            curr_holdings = holdings_history[i]
+
+            # 获取TopN持仓
+            prev_top = set(sorted(prev_holdings.keys(),
+                                  key=lambda x: prev_holdings.get(x, 0),
+                                  reverse=True)[:top_n])
+            curr_top = set(sorted(curr_holdings.keys(),
+                                  key=lambda x: curr_holdings.get(x, 0),
+                                  reverse=True)[:top_n])
+
+            # Jaccard相似度
+            intersection = len(prev_top & curr_top)
+            union = len(prev_top | curr_top)
+            jaccard = intersection / union if union > 0 else 0.0
+            jaccard_scores.append(jaccard)
+
+            # Top10集合（用于计算stickiness）
+            if i == len(holdings_history) - 1:
+                top10_sets.append(curr_top)
+            if i == 1:
+                top10_sets.append(prev_top)
+
+        # 计算最近一期Jaccard
+        jaccard_1m = jaccard_scores[-1] if jaccard_scores else 0.0
+
+        # 计算12期平均Jaccard
+        lookback = min(12, len(jaccard_scores))
+        jaccard_12m_avg = np.mean(jaccard_scores[-lookback:]) if jaccard_scores else 0.0
+
+        # 计算Top10粘性（过去12期Top10保持率）
+        if len(holdings_history) >= 12:
+            all_top10 = []
+            for h in holdings_history[-12:]:
+                top10 = set(sorted(h.keys(),
+                                   key=lambda x: h.get(x, 0),
+                                   reverse=True)[:10])
+                all_top10.append(top10)
+
+            # 计算交集占比
+            if all_top10:
+                common_top10 = set.intersection(*all_top10) if len(all_top10) > 1 else all_top10[0]
+                top_holdings_stickiness = len(common_top10) / 10.0
+            else:
+                top_holdings_stickiness = 0.0
+        else:
+            # 数据不足12期，用全部数据计算
+            all_top10 = []
+            for h in holdings_history:
+                top10 = set(sorted(h.keys(),
+                                   key=lambda x: h.get(x, 0),
+                                   reverse=True)[:10])
+                all_top10.append(top10)
+
+            if all_top10:
+                common_top10 = set.intersection(*all_top10) if len(all_top10) > 1 else all_top10[0]
+                top_holdings_stickiness = len(common_top10) / 10.0
+            else:
+                top_holdings_stickiness = 0.0
+
+        # 当前持仓数量
+        current_holdings = holdings_history[-1] if holdings_history else {}
+        selected_size = len([c for c, w in current_holdings.items() if w > 0])
+
+        return {
+            'holdings_jaccard_1m': jaccard_1m,
+            'holdings_jaccard_12m_avg': jaccard_12m_avg,
+            'top_holdings_stickiness': top_holdings_stickiness,
+            'universe_size': 0,  # 需要从外部传入
+            'selected_size': selected_size,
+        }
+
     def calculate_all_metrics(self,
                                returns: np.ndarray,
                                benchmark_returns: np.ndarray = None,
@@ -275,7 +374,9 @@ class MetricsCalculator:
                                weights: Dict[str, float] = None,
                                risk_tier_counts: Dict = None,
                                factor_ic: List[float] = None,
-                               degradation_stats: Dict = None) -> Dict:
+                               degradation_stats: Dict = None,
+                               holdings_history: List[Dict[str, float]] = None,
+                               universe_stats: Dict = None) -> Dict:
         """
         计算所有指标
 
@@ -288,6 +389,8 @@ class MetricsCalculator:
             risk_tier_counts: 风控档位计数
             factor_ic: 因子IC列表
             degradation_stats: Gate-2 降级统计
+            holdings_history: Gate-6 历史持仓列表
+            universe_stats: Gate-6 股票池统计
 
         Returns:
             完整指标字典
@@ -337,6 +440,16 @@ class MetricsCalculator:
                 'degradation_impact_fallback_rate': degradation_stats.get('impact_fallback_rate', 0.0)
             }
 
+        # Gate-6: 名单固化指标
+        list_fixation_metrics = {}
+        if holdings_history:
+            list_fixation_metrics = self.calculate_list_fixation_metrics(holdings_history)
+            # 添加universe统计
+            if universe_stats:
+                list_fixation_metrics['universe_size'] = universe_stats.get('universe_size', 0)
+                list_fixation_metrics['universe_source'] = universe_stats.get('source', 'unknown')
+                list_fixation_metrics['universe_is_degraded'] = universe_stats.get('is_degraded', False)
+
         # 合并所有指标
         all_metrics = {
             **returns_metrics,
@@ -347,6 +460,7 @@ class MetricsCalculator:
             **concentration_metrics,
             **ic_metrics,
             **degradation_metrics,  # Gate-2
+            **list_fixation_metrics,  # Gate-6
             'risk_tier_counts': risk_tier_metrics,
             'calculation_time': datetime.now().isoformat()
         }

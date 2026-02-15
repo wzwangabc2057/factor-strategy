@@ -97,6 +97,13 @@ class RobustnessTestRunner:
         'monthly_turnover': {'pass_max': 0.10, 'fail_min': 0.15, 'weight': 0.5},
     }
 
+    # Gate-6: 名单固化阈值定义
+    LIST_FIXATION_THRESHOLDS = {
+        'holdings_jaccard_12m_avg': {'max': 0.75, 'message': '12期平均Jaccard相似度过高'},
+        'top_holdings_stickiness': {'max': 0.80, 'message': 'Top10持仓保持率过高'},
+        'turnover_scale_avg_12m': {'min': 0.5, 'message': '换手缩放因子过低'},
+    }
+
     def __init__(self,
                  output_dir: str = 'results/robustness',
                  fast_mode: bool = False,
@@ -332,7 +339,7 @@ class RobustnessTestRunner:
 
     def _evaluate_pass_criteria(self, metrics: Dict) -> Tuple[bool, List[str]]:
         """
-        Gate-4: 评估是否通过门槛，返回失败原因
+        Gate-4 & Gate-6: 评估是否通过门槛，返回失败原因
 
         Args:
             metrics: 指标字典
@@ -342,6 +349,7 @@ class RobustnessTestRunner:
         """
         fail_reasons = []
 
+        # Gate-4: 基础KPI检查
         for key, criteria in self.PASS_CRITERIA.items():
             value = metrics.get(key, 0)
 
@@ -349,6 +357,45 @@ class RobustnessTestRunner:
                 fail_reasons.append(f"{key}={value:.2%} < 门槛{criteria['min']:.2%}")
             if 'max' in criteria and value > criteria['max']:
                 fail_reasons.append(f"{key}={value:.2%} > 上限{criteria['max']:.2%}")
+
+        # Gate-6: 名单固化检查
+        list_fixation_failed = False
+        for key, criteria in self.LIST_FIXATION_THRESHOLDS.items():
+            value = metrics.get(key)
+            if value is None:
+                continue
+
+            if 'max' in criteria and value > criteria['max']:
+                fail_reasons.append(f"list_fixation:{key}={value:.2%} > 上限{criteria['max']:.2%}")
+                list_fixation_failed = True
+            if 'min' in criteria and value < criteria['min']:
+                fail_reasons.append(f"list_fixation:{key}={value:.2%} < 下限{criteria['min']:.2%}")
+                list_fixation_failed = True
+
+        passed = len(fail_reasons) == 0
+        return passed, fail_reasons
+
+    def _check_list_fixation(self, metrics: Dict) -> Tuple[bool, List[str]]:
+        """
+        Gate-6: 专门的名单固化检查
+
+        Args:
+            metrics: 指标字典
+
+        Returns:
+            (是否通过, 失败原因列表)
+        """
+        fail_reasons = []
+
+        for key, criteria in self.LIST_FIXATION_THRESHOLDS.items():
+            value = metrics.get(key)
+            if value is None:
+                continue
+
+            if 'max' in criteria and value > criteria['max']:
+                fail_reasons.append(f"{criteria['message']}: {key}={value:.2%}")
+            if 'min' in criteria and value < criteria['min']:
+                fail_reasons.append(f"{criteria['message']}: {key}={value:.2%}")
 
         passed = len(fail_reasons) == 0
         return passed, fail_reasons
