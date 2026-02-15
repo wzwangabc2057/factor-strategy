@@ -1,12 +1,17 @@
 """
-增强版多因子策略回测 - 适配远程ClickHouse
-从192.168.0.74 ClickHouse获取行情数据，从CSV获取估值数据
+增强版多因子策略回测 v2 - 修复版
+修复:
+1. 使用原始weight作为baseline (而非adjusted_weight)
+2. 消除双重调整bug
+3. 温和化权重调整系数 (0.75x~1.35x)
+4. R4/R5 使用不同因子权重产生不同增强结果
 """
 
 import pandas as pd
 import numpy as np
 import sys
 import os
+import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
 import warnings
@@ -17,14 +22,13 @@ import clickhouse_connect
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from data.factor_calculator_v2 import EnhancedFactorCalculator
-from strategy.enhanced_strategy_v2 import EnhancedStrategyV2
 
 
 class LocalDataFetcher:
     """本地数据获取器 - 从ClickHouse获取所有数据"""
 
     def __init__(self):
-        self.ch_client = clickhouse_connect.get_client(host='192.168.0.74', port=8123)
+        self.ch_client = clickhouse_connect.get_client(host='192.168.0.74', port=8123, compress=False, query_limit=0)
 
     def get_stock_prices(self, codes: List[str], start_date: str, end_date: str) -> pd.DataFrame:
         """从ClickHouse获取复权价格"""
@@ -42,10 +46,7 @@ class LocalDataFetcher:
         return df
 
     def get_financial_data(self, codes: List[str], report_date: str = None) -> pd.DataFrame:
-        """
-        从本地ClickHouse获取财务数据
-        如果不指定report_date，获取最新一期数据
-        """
+        """从本地ClickHouse获取财务数据"""
         codes_str = "', '".join(codes)
 
         if report_date:
@@ -62,7 +63,6 @@ class LocalDataFetcher:
               AND report_date = '{report_date}'
             """
         else:
-            # 获取每只股票最新年报数据 (使用2024年年报，因为季报ROE未年化)
             query = f"""
             SELECT code,
                    report_date,
@@ -85,11 +85,10 @@ class LocalDataFetcher:
         ])
         return df
 
-    def get_financial_growth(self, codes: List[str], report_date: str = None) -> pd.DataFrame:
-        """计算财务增长率 (同比) - 使用EPS计算，因为net_profit数据可能为0"""
+    def get_financial_growth(self, codes: List[str]) -> pd.DataFrame:
+        """计算财务增长率 (同比)"""
         codes_str = "', '".join(codes)
 
-        # 使用EPS计算同比增长率 (EPS = 每股收益，与净利润成正比)
         query = f"""
         WITH latest AS (
             SELECT code, eps, operating_revenue, report_date
@@ -117,7 +116,6 @@ class LocalDataFetcher:
         try:
             result = self.ch_client.query(query)
             df = pd.DataFrame(result.result_rows, columns=['code', 'profit_growth', 'revenue_growth'])
-            # 去重
             df = df.drop_duplicates(subset=['code'], keep='first')
             return df
         except Exception as e:
@@ -125,7 +123,7 @@ class LocalDataFetcher:
             return pd.DataFrame()
 
     def get_market_data(self, codes: List[str], date: str = None) -> pd.DataFrame:
-        """获取市值数据 (从stock_data_qfq表)"""
+        """获取市值数据"""
         codes_str = "', '".join(codes)
 
         if date:
@@ -138,7 +136,6 @@ class LocalDataFetcher:
               AND date = '{date}'
             """
         else:
-            # 获取最新数据
             query = f"""
             SELECT code,
                    liutongshizhi as market_cap,
@@ -156,9 +153,7 @@ class LocalDataFetcher:
         try:
             result = self.ch_client.query(query)
             df = pd.DataFrame(result.result_rows, columns=['code', 'market_cap', 'turnover_rate'])
-            # 市值单位转为亿
             df['market_cap'] = df['market_cap'] / 1e8
-            # 去重
             df = df.drop_duplicates(subset=['code'], keep='first')
             return df
         except Exception as e:
@@ -266,15 +261,9 @@ class LocalDataFetcher:
             return pd.DataFrame()
 
 
-def build_factor_data(fetcher: LocalDataFetcher, codes: List[str], eval_date: str, min_market_cap: float = 100) -> pd.DataFrame:
-    """
-    从本地数据构建因子DataFrame
-
-    Args:
-        min_market_cap: 最小市值(亿)，默认100亿
-    """
+def build_factor_data(fetcher: LocalDataFetcher, codes: List[str], eval_date: str, min_market_cap: float = 0) -> pd.DataFrame:
+    """从本地数据构建因子DataFrame"""
     print(f"\n构建因子数据 (评估日期: {eval_date})...")
-    print(f"  市值过滤: >= {min_market_cap}亿")
 
     # 1. 获取财务数据
     print("  获取财务数据...")
@@ -307,12 +296,9 @@ def build_factor_data(fetcher: LocalDataFetcher, codes: List[str], eval_date: st
     print(f"    计算完成 {len(volatility_df)} 只股票")
 
     # 合并所有数据
-    print("  合并因子数据...")
     factor_df = pd.DataFrame({'code': codes})
 
-    # 合并财务数据 (确保每个code只有一行)
     if not financial_df.empty:
-        # 去重，保留第一条（最新的）
         financial_df_unique = financial_df.drop_duplicates(subset=['code'], keep='first')
         factor_df = factor_df.merge(
             financial_df_unique[['code', 'roe', 'eps', 'net_profit_margin', 'gross_profit_margin']],
@@ -322,10 +308,8 @@ def build_factor_data(fetcher: LocalDataFetcher, codes: List[str], eval_date: st
         for col in ['roe', 'eps', 'net_profit_margin', 'gross_profit_margin']:
             factor_df[col] = np.nan
 
-    # 合并增长数据 (确保每个code只有一行)
     if not growth_df.empty:
         growth_df_unique = growth_df.drop_duplicates(subset=['code'], keep='first')
-        # 重命名列以匹配因子计算器期望的名称
         growth_df_unique = growth_df_unique.rename(columns={
             'profit_growth': 'net_profit_yoy',
             'revenue_growth': 'revenue_yoy'
@@ -335,25 +319,21 @@ def build_factor_data(fetcher: LocalDataFetcher, codes: List[str], eval_date: st
         factor_df['net_profit_yoy'] = np.nan
         factor_df['revenue_yoy'] = np.nan
 
-    # 合并市值数据
     if not market_df.empty:
         factor_df = factor_df.merge(market_df[['code', 'market_cap']], on='code', how='left')
     else:
         factor_df['market_cap'] = np.nan
 
-    # 合并动量
     if not momentum_df.empty:
         factor_df = factor_df.merge(momentum_df, on='code', how='left')
     else:
         factor_df['momentum'] = np.nan
 
-    # 合并回撤
     if not drawdown_df.empty:
         factor_df = factor_df.merge(drawdown_df, on='code', how='left')
     else:
         factor_df['drawdown_3m'] = np.nan
 
-    # 合并波动率
     if not volatility_df.empty:
         factor_df = factor_df.merge(volatility_df, on='code', how='left')
     else:
@@ -366,7 +346,6 @@ def build_factor_data(fetcher: LocalDataFetcher, codes: List[str], eval_date: st
         val_csv = pd.read_csv(csv_path)
         val_csv['code'] = val_csv['code'].astype(str).str.zfill(6)
 
-        # 重新计算ROE: eps / bvps * 100 (与原始代码一致)
         val_csv['roe_calc'] = np.where(
             val_csv['bvps'] > 0,
             val_csv['eps'] / val_csv['bvps'] * 100,
@@ -378,86 +357,101 @@ def build_factor_data(fetcher: LocalDataFetcher, codes: List[str], eval_date: st
         pe_df = pe_df.drop_duplicates(subset=['code'], keep='first')
         pe_df = pe_df[pe_df['code'].isin(codes)]
 
-        # 合并PE/PB/ROE数据
         factor_df = factor_df.merge(pe_df, on='code', how='left')
-        print(f"    获取到 {len(pe_df)} 只股票PE/PB数据")
 
-        # 使用重新计算的ROE替换原ROE
         if 'roe_calc' in factor_df.columns:
             factor_df['roe'] = factor_df['roe_calc'].combine_first(factor_df['roe'])
             factor_df = factor_df.drop(columns=['roe_calc'])
-        print(f"    ROE中位数: {factor_df['roe'].median():.2f}%")
 
-        # 补充股息率数据 (valuation_local.csv中dividend_yield全为0)
         div_csv_path = os.path.join(os.path.dirname(__file__), 'dividend_yield_all.csv')
         if os.path.exists(div_csv_path):
             div_csv = pd.read_csv(div_csv_path)
             div_csv['code'] = div_csv['code'].astype(str).str.zfill(6)
             div_csv = div_csv.drop_duplicates(subset=['code'], keep='first')
             div_dict = dict(zip(div_csv['code'], div_csv['dividend_yield']))
-            # 用dividend_yield_all.csv的值覆盖
             factor_df['dividend_yield'] = factor_df['code'].map(div_dict).combine_first(factor_df['dividend_yield'])
-            print(f"    股息率中位数 (补充后): {factor_df['dividend_yield'].median()*100:.2f}%")
     except Exception as e:
         print(f"    获取PE数据失败: {e}")
-        import traceback
-        traceback.print_exc()
         factor_df['pe'] = np.nan
         factor_df['pb'] = np.nan
         factor_df['dividend_yield'] = np.nan
 
-    # 去重（确保每个code只有一行）
     factor_df = factor_df.drop_duplicates(subset=['code'], keep='first')
-    print(f"  去重后: {len(factor_df)} 只股票")
 
     # 市值过滤
-    before_filter = len(factor_df)
-    factor_df = factor_df[factor_df['market_cap'] >= min_market_cap]
-    print(f"  市值过滤: {before_filter} -> {len(factor_df)} 只股票 (过滤掉 {before_filter - len(factor_df)} 只小市值股票)")
+    if min_market_cap > 0:
+        factor_df = factor_df[factor_df['market_cap'] >= min_market_cap]
 
     # 填充缺失值
     defaults = {
         'roe': factor_df['roe'].median() if factor_df['roe'].notna().any() else 10,
-        'net_profit_yoy': 0,
-        'revenue_yoy': 0,
+        'net_profit_yoy': 0, 'revenue_yoy': 0,
         'pe': factor_df['pe'].median() if factor_df['pe'].notna().any() else 20,
         'pb': factor_df['pb'].median() if factor_df['pb'].notna().any() else 3,
         'dividend_yield': factor_df['dividend_yield'].median() if factor_df['dividend_yield'].notna().any() else 0.02,
         'market_cap': factor_df['market_cap'].median() if factor_df['market_cap'].notna().any() and factor_df['market_cap'].median() > 0 else 300,
-        'momentum': 0,
-        'drawdown_3m': -10,
-        'volatility': 30,
-        'cash_flow_ratio': 1.0
+        'momentum': 0, 'drawdown_3m': -10, 'volatility': 30, 'cash_flow_ratio': 1.0
     }
     factor_df = factor_df.fillna(defaults)
-
-    # 添加ROE稳定性 (基于净利润率的稳定性估计)
-    factor_df['roe_stability'] = 80  # 默认值
-
-    # 为兼容性添加profit_growth别名
+    factor_df['roe_stability'] = 80
     factor_df['profit_growth'] = factor_df['net_profit_yoy']
 
     print(f"  因子数据构建完成: {len(factor_df)} 只股票")
-
-    # 显示因子统计
-    print(f"\n  因子统计:")
-    print(f"    ROE中位数: {factor_df['roe'].median():.2f}%")
-    print(f"    PE中位数: {factor_df['pe'].median():.1f}")
-    print(f"    PB中位数: {factor_df['pb'].median():.2f}")
-    print(f"    股息率中位数: {factor_df['dividend_yield'].median()*100:.2f}%")
-    print(f"    净利润增速中位数: {factor_df['net_profit_yoy'].median():.2f}%")
-    print(f"    市值中位数: {factor_df['market_cap'].median():.0f}亿")
-    print(f"    动量中位数: {factor_df['momentum'].median():.2f}%")
-    print(f"    3个月回撤中位数: {factor_df['drawdown_3m'].median():.2f}%")
-
     return factor_df
+
+
+def apply_mild_weight_tilt(original_weights: pd.DataFrame,
+                           scored_data: pd.DataFrame,
+                           tilt_strength: float = 0.3,
+                           max_weight: float = 0.08) -> pd.DataFrame:
+    """
+    温和的权重调整 - 核心修复
+
+    原来的问题: 10档 multiplier (0.3x~2.5x) 过于激进，
+    配合 max_weight=5% clip + 归一化后，所有策略趋同。
+
+    新方法: 用 composite_score 的百分位做线性倾斜，
+    tilt_strength 控制调整幅度。
+
+    multiplier = 1 + tilt_strength * (percentile - 0.5)
+    即: 中位数股票不变, top 股票超配, bottom 股票低配
+    tilt_strength=0.3 时: top → 1.15x, bottom → 0.85x
+    tilt_strength=0.5 时: top → 1.25x, bottom → 0.75x
+    """
+    portfolio = original_weights.copy()
+
+    # 合并得分
+    portfolio = portfolio.merge(
+        scored_data[['code', 'composite_score']],
+        on='code', how='left'
+    )
+    portfolio['composite_score'] = portfolio['composite_score'].fillna(50)
+
+    # 计算百分位
+    portfolio['percentile'] = portfolio['composite_score'].rank(pct=True)
+
+    # 线性倾斜: 中位数不变
+    portfolio['multiplier'] = 1.0 + tilt_strength * (portfolio['percentile'] - 0.5)
+
+    # 计算调整后权重
+    portfolio['adjusted_weight'] = portfolio['weight'] * portfolio['multiplier']
+
+    # 约束: 不让单股过大
+    portfolio['adjusted_weight'] = portfolio['adjusted_weight'].clip(upper=max_weight)
+
+    # 归一化
+    total = portfolio['adjusted_weight'].sum()
+    if total > 0:
+        portfolio['adjusted_weight'] = portfolio['adjusted_weight'] / total
+
+    return portfolio
 
 
 class BacktestEngine:
     """回测引擎"""
 
     def __init__(self):
-        self.ch_client = clickhouse_connect.get_client(host='192.168.0.74', port=8123)
+        self.ch_client = clickhouse_connect.get_client(host='192.168.0.74', port=8123, compress=False, query_limit=0)
         self.data_fetcher = LocalDataFetcher()
 
     def get_daily_prices(self, codes: List[str], start_date: str, end_date: str) -> pd.DataFrame:
@@ -480,122 +474,96 @@ class BacktestEngine:
                      start_date: str,
                      end_date: str,
                      initial_capital: float = 1000000,
-                     strategy_type: str = 'stable') -> Dict:
-        """
-        运行回测
-        """
+                     strategy_type: str = 'stable',
+                     tilt_strength: float = 0.3) -> Dict:
+        """运行回测"""
         print("=" * 60)
-        print(f"运行回测 ({strategy_type})")
+        print(f"运行回测 ({strategy_type}, tilt={tilt_strength})")
         print(f"回测区间: {start_date} ~ {end_date}")
         print("=" * 60)
 
         codes = portfolio['code'].tolist()
 
-        # 构建因子数据 (不做市值过滤，因为持仓已经是预筛选的)
+        # 构建因子数据
         factor_data = build_factor_data(self.data_fetcher, codes, end_date, min_market_cap=0)
 
-        # 更新codes列表 (只保留通过市值过滤的股票)
+        # 只保留有因子数据的股票
         filtered_codes = factor_data['code'].tolist()
         if len(filtered_codes) < len(codes):
-            print(f"\n注意: {len(codes) - len(filtered_codes)} 只股票因市值<100亿被过滤")
+            print(f"\n注意: {len(codes) - len(filtered_codes)} 只股票无因子数据")
             portfolio = portfolio[portfolio['code'].isin(filtered_codes)].copy()
-            # 重新归一化权重
             portfolio['weight'] = portfolio['weight'] / portfolio['weight'].sum()
             codes = filtered_codes
 
-        # 计算因子得分
-        print("\n计算因子得分...")
+        # 计算因子得分 (R4/R5 用不同因子权重)
+        print(f"\n计算因子得分 (策略: {strategy_type})...")
         factor_calc = EnhancedFactorCalculator(strategy_type=strategy_type)
         scored_data = factor_calc.calculate_all_scores(factor_data)
 
-        # 调整权重
-        print("\n调整权重...")
-        strategy = EnhancedStrategyV2()
-
-        # 构建factor_data用于绩优股回撤判断，需要匹配strategy期望的列名
-        factor_data_for_strategy = factor_data[['code', 'roe', 'net_profit_yoy', 'drawdown_3m']].copy()
-        factor_data_for_strategy = factor_data_for_strategy.rename(columns={'drawdown_3m': 'momentum_3m'})
-        factor_data_for_strategy = factor_data_for_strategy.fillna({'roe': 10, 'net_profit_yoy': 0, 'momentum_3m': -10})
-
-        enhanced_weights = strategy.adjust_weights(
-            original_portfolio=portfolio,
-            composite_scores=scored_data,
-            factor_data=factor_data_for_strategy
+        # 温和权重调整 (核心修复)
+        print(f"\n温和权重调整 (tilt_strength={tilt_strength})...")
+        enhanced_portfolio = apply_mild_weight_tilt(
+            portfolio, scored_data,
+            tilt_strength=tilt_strength,
+            max_weight=0.08
         )
+
+        # 统计调整幅度
+        enhanced_portfolio['weight_change'] = enhanced_portfolio['adjusted_weight'] / enhanced_portfolio['weight'] - 1
+        increased = (enhanced_portfolio['weight_change'] > 0.05).sum()
+        decreased = (enhanced_portfolio['weight_change'] < -0.05).sum()
+        print(f"  增加>5%: {increased}只, 减少>5%: {decreased}只")
+
+        # Top 10 调整
+        top10 = enhanced_portfolio.nlargest(10, 'adjusted_weight')
+        print(f"\n  Top 10 权重:")
+        for _, row in top10.iterrows():
+            print(f"    {row['code']}: {row['weight']*100:.2f}% -> {row['adjusted_weight']*100:.2f}% "
+                  f"(得分{row['composite_score']:.0f}, pct{row['percentile']:.0%})")
 
         # 获取价格数据
         print(f"\n获取 {len(codes)} 只股票价格数据...")
         price_df = self.get_daily_prices(codes, start_date, end_date)
         print(f"获取到 {len(price_df)} 条价格数据")
 
-        # 去重防止pivot报错
         price_df = price_df.drop_duplicates(subset=['date', 'code'], keep='last')
         price_pivot = price_df.pivot(index='date', columns='code', values='close')
         dates = sorted(price_pivot.index.tolist())
         print(f"共 {len(dates)} 个交易日")
 
-        # 获取股息率数据
+        # 股息率
         dividend_dict = dict(zip(factor_data['code'], factor_data['dividend_yield']))
-        # 计算每日股息收益 (年化股息率 / 252个交易日)
         daily_dividend = {code: div / 252 for code, div in dividend_dict.items()}
 
-        # 计算每日收益 - 增强版 (包含股息收入)
-        enhanced_weight_dict = dict(zip(enhanced_weights['code'], enhanced_weights['adjusted_weight']))
-        enhanced_daily_returns = []
+        # 计算每日收益
+        def calc_daily_returns(weight_dict):
+            daily_returns = []
+            for i in range(1, len(dates)):
+                date = dates[i]
+                prev_date = dates[i-1]
+                daily_return = 0
+                for code in codes:
+                    if code in price_pivot.columns:
+                        curr_price = price_pivot.loc[date, code]
+                        prev_price = price_pivot.loc[prev_date, code]
+                        if pd.notna(curr_price) and pd.notna(prev_price) and prev_price > 0:
+                            price_return = (curr_price / prev_price - 1)
+                            div_return = daily_dividend.get(code, 0)
+                            stock_return = price_return + div_return
+                            weight = weight_dict.get(code, 0)
+                            daily_return += stock_return * weight
+                daily_returns.append({'date': date, 'return': daily_return})
+            returns_df = pd.DataFrame(daily_returns)
+            returns_df['cumulative'] = (1 + returns_df['return']).cumprod()
+            return returns_df
 
-        for i in range(1, len(dates)):
-            date = dates[i]
-            prev_date = dates[i-1]
+        # 增强版收益
+        enhanced_weight_dict = dict(zip(enhanced_portfolio['code'], enhanced_portfolio['adjusted_weight']))
+        enhanced_returns_df = calc_daily_returns(enhanced_weight_dict)
 
-            daily_return = 0
-            for code in codes:
-                if code in price_pivot.columns:
-                    curr_price = price_pivot.loc[date, code]
-                    prev_price = price_pivot.loc[prev_date, code]
-
-                    if pd.notna(curr_price) and pd.notna(prev_price) and prev_price > 0:
-                        # 价格收益
-                        price_return = (curr_price / prev_price - 1)
-                        # 股息收益
-                        div_return = daily_dividend.get(code, 0)
-                        # 总收益 = 价格收益 + 股息收益
-                        stock_return = price_return + div_return
-                        weight = enhanced_weight_dict.get(code, 0)
-                        daily_return += stock_return * weight
-
-            enhanced_daily_returns.append({'date': date, 'return': daily_return})
-
-        enhanced_returns_df = pd.DataFrame(enhanced_daily_returns)
-        enhanced_returns_df['cumulative'] = (1 + enhanced_returns_df['return']).cumprod()
-
-        # 计算每日收益 - 原始版 (包含股息收入)
+        # 原始版收益
         orig_weight_dict = dict(zip(portfolio['code'], portfolio['weight']))
-        original_daily_returns = []
-
-        for i in range(1, len(dates)):
-            date = dates[i]
-            prev_date = dates[i-1]
-
-            daily_return = 0
-            for code in codes:
-                if code in price_pivot.columns:
-                    curr_price = price_pivot.loc[date, code]
-                    prev_price = price_pivot.loc[prev_date, code]
-
-                    if pd.notna(curr_price) and pd.notna(prev_price) and prev_price > 0:
-                        # 价格收益
-                        price_return = (curr_price / prev_price - 1)
-                        # 股息收益
-                        div_return = daily_dividend.get(code, 0)
-                        # 总收益 = 价格收益 + 股息收益
-                        stock_return = price_return + div_return
-                        weight = orig_weight_dict.get(code, 0)
-                        daily_return += stock_return * weight
-
-            original_daily_returns.append({'date': date, 'return': daily_return})
-
-        original_returns_df = pd.DataFrame(original_daily_returns)
-        original_returns_df['cumulative'] = (1 + original_returns_df['return']).cumprod()
+        original_returns_df = calc_daily_returns(orig_weight_dict)
 
         # 计算绩效指标
         def calc_metrics(returns_df):
@@ -610,14 +578,11 @@ class BacktestEngine:
             daily_returns = returns_df['return']
             sharpe = daily_returns.mean() / daily_returns.std() * np.sqrt(252) if daily_returns.std() > 0 else 0
 
-            calmar = abs(annual_return / max_drawdown) if max_drawdown != 0 else 0
-
             return {
                 'annual_return': annual_return,
                 'total_return': total_return,
                 'max_drawdown': max_drawdown,
                 'sharpe': sharpe,
-                'calmar': calmar,
                 'final_nav': returns_df['cumulative'].iloc[-1]
             }
 
@@ -625,67 +590,61 @@ class BacktestEngine:
         original_metrics = calc_metrics(original_returns_df)
 
         # 打印结果
-        print(f"\n增强版 绩效指标:")
-        print(f"  年化收益: {enhanced_metrics['annual_return']*100:.2f}%")
-        print(f"  最大回撤: {enhanced_metrics['max_drawdown']*100:.2f}%")
-        print(f"  夏普比率: {enhanced_metrics['sharpe']:.2f}")
-        print(f"  最终净值: {enhanced_metrics['final_nav']:.4f}")
-
-        print(f"\n原始版 绩效指标:")
-        print(f"  年化收益: {original_metrics['annual_return']*100:.2f}%")
-        print(f"  最大回撤: {original_metrics['max_drawdown']*100:.2f}%")
-        print(f"  夏普比率: {original_metrics['sharpe']:.2f}")
-        print(f"  最终净值: {original_metrics['final_nav']:.4f}")
+        print(f"\n{'='*50}")
+        print(f"增强版: 年化{enhanced_metrics['annual_return']*100:.2f}%, "
+              f"回撤{enhanced_metrics['max_drawdown']*100:.2f}%, "
+              f"夏普{enhanced_metrics['sharpe']:.2f}")
+        print(f"原始版: 年化{original_metrics['annual_return']*100:.2f}%, "
+              f"回撤{original_metrics['max_drawdown']*100:.2f}%, "
+              f"夏普{original_metrics['sharpe']:.2f}")
+        diff = (enhanced_metrics['annual_return'] - original_metrics['annual_return']) * 100
+        print(f"提升: {diff:+.2f}%")
+        print(f"{'='*50}")
 
         return {
             'enhanced': enhanced_metrics,
             'original': original_metrics,
             'enhanced_returns': enhanced_returns_df,
             'original_returns': original_returns_df,
-            'enhanced_weights': enhanced_weights,
-            'factor_data': scored_data
+            'enhanced_weights': enhanced_portfolio,
+            'factor_data': scored_data,
+            'strategy_type': strategy_type
         }
 
 
 def main():
     print("=" * 70)
-    print("增强版多因子策略回测 - 本地数据版")
+    print("增强版多因子策略回测 v2 (修复版)")
     print(f"运行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 70)
 
-    # 加载持仓 (从CSV文件)
+    # 加载持仓 - FIX: 使用原始 weight 列 (不是 adjusted_weight)
     base_dir = os.path.dirname(__file__)
     print(f"\n加载持仓文件...")
 
     r4 = pd.read_csv(os.path.join(base_dir, 'r4_weights_local.csv'))
     r5 = pd.read_csv(os.path.join(base_dir, 'r5_weights_local.csv'))
 
-    # 标准化code格式
     r4['code'] = r4['code'].astype(str).str.zfill(6)
     r5['code'] = r5['code'].astype(str).str.zfill(6)
 
-    # 使用adjusted_weight作为权重（如果有的话），否则用weight
-    weight_col = 'adjusted_weight' if 'adjusted_weight' in r4.columns else 'weight'
-    r4 = r4[['code', weight_col]].copy()
-    r5 = r5[['code', weight_col]].copy()
-    r4.columns = ['code', 'weight']
-    r5.columns = ['code', 'weight']
+    # FIX: 始终使用原始 weight 列, 不使用 adjusted_weight
+    r4 = r4[['code', 'weight']].copy()
+    r5 = r5[['code', 'weight']].copy()
 
-    # 归一化权重
+    # 归一化
     r4['weight'] = r4['weight'] / r4['weight'].sum()
     r5['weight'] = r5['weight'] / r5['weight'].sum()
 
-    print(f"R4 稳健型: {len(r4)} 只股票")
-    print(f"R5 进取型: {len(r5)} 只股票")
+    print(f"R4 稳健型: {len(r4)} 只股票, 最大权重: {r4['weight'].max()*100:.2f}%")
+    print(f"R5 进取型: {len(r5)} 只股票, 最大权重: {r5['weight'].max()*100:.2f}%")
 
-    # 初始化回测引擎
     engine = BacktestEngine()
 
-    # 回测参数
-    start_date = '2019-01-01'
+    start_date = '2020-01-01'
     end_date = '2025-12-31'
 
-    # R4 回测
+    # R4 回测 (稳健型: 温和倾斜)
     print("\n" + "=" * 70)
     print("【R4 稳健型策略回测】")
     print("=" * 70)
@@ -693,10 +652,11 @@ def main():
         portfolio=r4,
         start_date=start_date,
         end_date=end_date,
-        strategy_type='stable'
+        strategy_type='stable',
+        tilt_strength=0.3
     )
 
-    # R5 回测
+    # R5 回测 (进取型: 稍强倾斜)
     print("\n" + "=" * 70)
     print("【R5 进取型策略回测】")
     print("=" * 70)
@@ -704,7 +664,8 @@ def main():
         portfolio=r5,
         start_date=start_date,
         end_date=end_date,
-        strategy_type='aggressive'
+        strategy_type='aggressive',
+        tilt_strength=0.4
     )
 
     # 结果对比
@@ -713,32 +674,39 @@ def main():
     print("=" * 70)
 
     print(f"""
-┌─────────────────────────────────────────────────────────────────────┐
-│                         回测结果对比                                │
-├─────────────┬───────────┬───────────┬──────────┬───────────────────┤
-│   策略      │ 原始年化  │ 增强年化  │   提升   │     夏普比率      │
-├─────────────┼───────────┼───────────┼──────────┼───────────────────┤
-│ R4 稳健型   │  {r4_result['original']['annual_return']*100:>6.2f}%  │  {r4_result['enhanced']['annual_return']*100:>6.2f}%  │ {(r4_result['enhanced']['annual_return']-r4_result['original']['annual_return'])*100:>+6.2f}% │ {r4_result['original']['sharpe']:.2f} → {r4_result['enhanced']['sharpe']:.2f}       │
-│ R5 进取型   │  {r5_result['original']['annual_return']*100:>6.2f}%  │  {r5_result['enhanced']['annual_return']*100:>6.2f}%  │ {(r5_result['enhanced']['annual_return']-r5_result['original']['annual_return'])*100:>+6.2f}% │ {r5_result['original']['sharpe']:.2f} → {r5_result['enhanced']['sharpe']:.2f}       │
-└─────────────┴───────────┴───────────┴──────────┴───────────────────┘
+┌───────────┬───────────┬───────────┬──────────┬───────────┐
+│  策略     │ 原始年化  │ 增强年化  │   提升   │ 夏普比率  │
+├───────────┼───────────┼───────────┼──────────┼───────────┤
+│ R4 稳健   │  {r4_result['original']['annual_return']*100:>6.2f}%  │  {r4_result['enhanced']['annual_return']*100:>6.2f}%  │ {(r4_result['enhanced']['annual_return']-r4_result['original']['annual_return'])*100:>+5.2f}% │ {r4_result['original']['sharpe']:.2f}→{r4_result['enhanced']['sharpe']:.2f} │
+│ R5 进取   │  {r5_result['original']['annual_return']*100:>6.2f}%  │  {r5_result['enhanced']['annual_return']*100:>6.2f}%  │ {(r5_result['enhanced']['annual_return']-r5_result['original']['annual_return'])*100:>+5.2f}% │ {r5_result['original']['sharpe']:.2f}→{r5_result['enhanced']['sharpe']:.2f} │
+└───────────┴───────────┴───────────┴──────────┴───────────┘
 """)
 
-    # 显示Top权重调整
-    print("\n【权重调整 Top 10 - R4稳健型】")
-    print(f"{'代码':<10} {'原权重':>10} {'新权重':>10} {'得分':>8}")
-    print("-" * 45)
-    top10_r4 = r4_result['enhanced_weights'].nlargest(10, 'adjusted_weight')
-    for _, row in top10_r4.iterrows():
-        orig_w = r4[r4['code'] == row['code']]['weight'].values[0] * 100 if len(r4[r4['code'] == row['code']]) > 0 else 0
-        score = row.get('composite_score', 0)
-        print(f"{row['code']:<10} {orig_w:>9.2f}% {row['adjusted_weight']*100:>9.2f}% {score:>8.1f}")
-
     # 保存结果
-    output_dir = os.path.dirname(__file__)
-    r4_result['enhanced_weights'].to_csv(f"{output_dir}/r4_weights_result.csv", index=False)
-    r5_result['enhanced_weights'].to_csv(f"{output_dir}/r5_weights_result.csv", index=False)
+    output_dir = os.path.dirname(os.path.abspath(__file__))
+    r4_result['enhanced_weights'].to_csv(os.path.join(output_dir, 'r4_weights_result.csv'), index=False)
+    r5_result['enhanced_weights'].to_csv(os.path.join(output_dir, 'r5_weights_result.csv'), index=False)
 
-    print(f"\n结果已保存到: {output_dir}")
+    # 保存JSON结果
+    result_json = {
+        'run_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'backtest_period': f'{start_date} ~ {end_date}',
+        'R4_stable': {
+            'enhanced': {k: v for k, v in r4_result['enhanced'].items() if isinstance(v, (int, float))},
+            'original': {k: v for k, v in r4_result['original'].items() if isinstance(v, (int, float))},
+            'strategy_type': 'stable'
+        },
+        'R5_aggressive': {
+            'enhanced': {k: v for k, v in r5_result['enhanced'].items() if isinstance(v, (int, float))},
+            'original': {k: v for k, v in r5_result['original'].items() if isinstance(v, (int, float))},
+            'strategy_type': 'aggressive'
+        }
+    }
+    json_path = os.path.join(output_dir, 'factor_backtest_result.json')
+    with open(json_path, 'w') as f:
+        json.dump(result_json, f, indent=2)
+
+    print(f"\n结果已保存")
     print("\n回测完成!")
 
 
