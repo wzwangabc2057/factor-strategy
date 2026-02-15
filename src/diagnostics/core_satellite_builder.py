@@ -1,13 +1,15 @@
 """
-双层组合构建器 v3.0
+双层组合构建器 v3.1
 
 Core Layer: 核心池（低频、稳健）
 - 从固化逻辑提取核心选择法
 - 季度调整，低换手
+- 支持 softmax / linear 软分配权重
 
 Satellite Layer: 卫星池（高频、轮动）
 - 因子轮动策略
 - 月度调整
+- 支持 Top10 权重上限约束
 
 使用方法:
     from src.diagnostics.core_satellite_builder import CoreSatelliteBuilder
@@ -25,6 +27,22 @@ from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def softmax(x: np.ndarray, temperature: float = 1.0) -> np.ndarray:
+    """
+    计算 softmax 归一化权重
+
+    Args:
+        x: 输入数组
+        temperature: 温度参数（越高越平滑）
+
+    Returns:
+        归一化后的概率分布
+    """
+    # 数值稳定性：减去最大值
+    exp_x = np.exp((x - np.max(x)) / temperature)
+    return exp_x / np.sum(exp_x)
 
 
 class CoreSatelliteBuilder:
@@ -55,6 +73,11 @@ class CoreSatelliteBuilder:
         self.core_min_hold = core_config.get('min_hold_period', 60)
         self.core_max_weight_sum = core_config.get('max_core_weight_sum', 0.60)
         self.core_method = core_config.get('method', 'fixation_core')
+        # v3.1: 权重分配方式
+        self.core_allocation = core_config.get('allocation', 'linear')
+        self.core_temperature = core_config.get('temperature', 1.5)
+        self.core_preserve_top_n = core_config.get('preserve_top_n', 5)
+        self.core_min_weight = core_config.get('min_weight', 0.005)
 
         # 卫星池配置
         sat_config = self.config.get('satellite', {})
@@ -63,6 +86,10 @@ class CoreSatelliteBuilder:
         self.satellite_weight_sum = sat_config.get('weight_sum', 0.40)
         self.satellite_exclude_core = sat_config.get('selection', {}).get('exclude_core', True)
         self.satellite_method = sat_config.get('method', 'factor_rotation')
+        # v3.1: 权重分配方式
+        self.satellite_allocation = sat_config.get('allocation', 'linear')
+        self.satellite_top10_cap = sat_config.get('top10_cap', 0.30)
+        self.satellite_min_weight = sat_config.get('min_weight', 0.002)
 
         # 状态追踪
         self.current_core = []
@@ -87,14 +114,21 @@ class CoreSatelliteBuilder:
                 'rebalance_frequency': 'quarterly',
                 'min_hold_period': 60,
                 'max_core_weight_sum': 0.60,
-                'method': 'fixation_core'
+                'method': 'fixation_core',
+                'allocation': 'softmax',
+                'temperature': 1.5,
+                'preserve_top_n': 5,
+                'min_weight': 0.005
             },
             'satellite': {
                 'n': 40,
                 'rebalance_frequency': 'monthly',
                 'weight_sum': 0.40,
                 'method': 'factor_rotation',
-                'selection': {'exclude_core': True}
+                'selection': {'exclude_core': True},
+                'allocation': 'linear',
+                'top10_cap': 0.30,
+                'min_weight': 0.002
             }
         }
 
@@ -294,20 +328,33 @@ class CoreSatelliteBuilder:
         # 2. 选择卫星池
         satellite, sat_details = self.select_satellite(scores, core, current_date)
 
-        # 3. 分配权重
+        # 3. 分配权重（v3.1 改进：软分配）
         weights = {}
 
-        # 核心池权重
+        # 核心池权重分配
         if core:
-            core_weight_per_stock = self.core_max_weight_sum / len(core)
-            for code in core:
-                weights[code] = core_weight_per_stock
+            core_weights = self._allocate_weights(
+                codes=core,
+                scores=scores,
+                allocation=self.core_allocation,
+                total_weight=self.core_max_weight_sum,
+                temperature=self.core_temperature,
+                min_weight=self.core_min_weight,
+                preserve_top_n=self.core_preserve_top_n
+            )
+            weights.update(core_weights)
 
-        # 卫星池权重
+        # 卫星池权重分配
         if satellite:
-            sat_weight_per_stock = self.satellite_weight_sum / len(satellite)
-            for code in satellite:
-                weights[code] = sat_weight_per_stock
+            sat_weights = self._allocate_weights(
+                codes=satellite,
+                scores=scores,
+                allocation=self.satellite_allocation,
+                total_weight=self.satellite_weight_sum,
+                min_weight=self.satellite_min_weight,
+                top10_cap=self.satellite_top10_cap
+            )
+            weights.update(sat_weights)
 
         # 4. 归一化
         total = sum(weights.values())
@@ -321,12 +368,14 @@ class CoreSatelliteBuilder:
                 'codes': core,
                 'count': len(core),
                 'weight_sum': self.core_max_weight_sum,
+                'allocation': self.core_allocation,
                 'details': core_details
             },
             'satellite': {
                 'codes': satellite,
                 'count': len(satellite),
                 'weight_sum': self.satellite_weight_sum,
+                'allocation': self.satellite_allocation,
                 'details': sat_details
             },
             'overlap': len(set(core) & set(satellite)),
@@ -334,6 +383,89 @@ class CoreSatelliteBuilder:
         }
 
         return weights, details
+
+    def _allocate_weights(self,
+                          codes: List[str],
+                          scores: pd.Series,
+                          allocation: str = 'linear',
+                          total_weight: float = 0.6,
+                          temperature: float = 1.5,
+                          min_weight: float = 0.002,
+                          preserve_top_n: int = 0,
+                          top10_cap: float = None) -> Dict[str, float]:
+        """
+        权重分配方法（支持 softmax / linear / equal_weight）
+
+        Args:
+            codes: 股票代码列表
+            scores: 得分Series
+            allocation: 分配方式 (softmax/linear/equal_weight)
+            total_weight: 总权重
+            temperature: softmax温度
+            min_weight: 最小权重
+            preserve_top_n: 保护前N名（避免权重过低）
+            top10_cap: Top10权重上限
+
+        Returns:
+            权重字典
+        """
+        if not codes:
+            return {}
+
+        # 获取这些股票的得分
+        code_scores = scores.loc[scores.index.isin(codes)]
+
+        if len(code_scores) == 0:
+            # 如果没有得分，等权分配
+            return {code: total_weight / len(codes) for code in codes}
+
+        # 按得分排序
+        sorted_scores = code_scores.sort_values(ascending=False)
+
+        if allocation == 'softmax':
+            # Softmax 分配
+            raw_weights = softmax(sorted_scores.values, temperature=temperature)
+        elif allocation == 'linear':
+            # 线性归一化（按得分比例）
+            raw_scores = sorted_scores.values - sorted_scores.min()
+            total = raw_scores.sum()
+            if total > 0:
+                raw_weights = raw_scores / total
+            else:
+                raw_weights = np.ones(len(sorted_scores)) / len(sorted_scores)
+        else:  # equal_weight
+            raw_weights = np.ones(len(sorted_scores)) / len(sorted_scores)
+
+        # 应用最小权重约束
+        raw_weights = np.maximum(raw_weights, min_weight)
+
+        # 重新归一化
+        raw_weights = raw_weights / raw_weights.sum()
+
+        # Top10 权重上限约束（仅 satellite）
+        if top10_cap is not None and len(raw_weights) >= 10:
+            top10_sum = raw_weights[:10].sum()
+            if top10_sum > top10_cap:
+                # 缩放 Top10
+                scale = top10_cap / top10_sum
+                raw_weights[:10] *= scale
+                # 重新归一化
+                raw_weights = raw_weights / raw_weights.sum()
+
+        # 保护前N名（避免权重过低）
+        if preserve_top_n > 0 and len(raw_weights) >= preserve_top_n:
+            for i in range(preserve_top_n):
+                if raw_weights[i] < min_weight * 2:
+                    raw_weights[i] = min_weight * 2
+            raw_weights = raw_weights / raw_weights.sum()
+
+        # 乘以总权重
+        raw_weights *= total_weight
+
+        # 构建权重字典
+        weights = {code: float(weight) for code, weight in zip(sorted_scores.index, raw_weights)}
+
+        return weights
 
     def get_stats(self) -> Dict:
         """获取统计信息"""

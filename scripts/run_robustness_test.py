@@ -104,6 +104,13 @@ class RobustnessTestRunner:
         'turnover_scale_avg_12m': {'min': 0.5, 'message': '换手缩放因子过低'},
     }
 
+    # Gate-0: 可靠性阈值定义
+    RELIABILITY_THRESHOLDS = {
+        'gate0_trigger_rate': {'max': 0.05, 'message': 'Gate-0 熔断触发率过高'},
+        'avg_score_missing_rate': {'max': 0.01, 'message': '平均得分缺失率过高'},
+        'avg_factor_missing_rate': {'max': 0.03, 'message': '平均因子缺失率过高'},
+    }
+
     def __init__(self,
                  output_dir: str = 'results/robustness',
                  fast_mode: bool = False,
@@ -339,7 +346,7 @@ class RobustnessTestRunner:
 
     def _evaluate_pass_criteria(self, metrics: Dict) -> Tuple[bool, List[str]]:
         """
-        Gate-4 & Gate-6: 评估是否通过门槛，返回失败原因
+        Gate-0 & Gate-4 & Gate-6: 评估是否通过门槛，返回失败原因
 
         Args:
             metrics: 指标字典
@@ -371,6 +378,17 @@ class RobustnessTestRunner:
             if 'min' in criteria and value < criteria['min']:
                 fail_reasons.append(f"list_fixation:{key}={value:.2%} < 下限{criteria['min']:.2%}")
                 list_fixation_failed = True
+
+        # Gate-0: 可靠性检查
+        for key, criteria in self.RELIABILITY_THRESHOLDS.items():
+            value = metrics.get(key)
+            if value is None:
+                continue
+
+            if 'max' in criteria and value > criteria['max']:
+                fail_reasons.append(f"reliability:{key}={value:.2%} > 上限{criteria['max']:.2%}")
+            if 'min' in criteria and value < criteria['min']:
+                fail_reasons.append(f"reliability:{key}={value:.2%} < 下限{criteria['min']:.2%}")
 
         passed = len(fail_reasons) == 0
         return passed, fail_reasons
@@ -539,10 +557,70 @@ class RobustnessTestRunner:
         else:
             report += "❌ 策略鲁棒性不足，需进一步优化\n"
 
+        # Gate-0: 可靠性诊断
+        report += self._generate_reliability_section(df)
+
         # Gate-6: 名单固化诊断
         report += self._generate_list_fixation_section(df)
 
         return report
+
+    def _generate_reliability_section(self, df: pd.DataFrame) -> str:
+        """生成 Gate-0 可靠性诊断章节"""
+        section = "\n## 8. Gate-0 可靠性诊断\n\n"
+
+        # 检查是否有可靠性指标
+        reliability_cols = ['gate0_trigger_rate', 'avg_score_missing_rate', 'avg_factor_missing_rate',
+                           'freeze_rebalance_count', 'reduce_only_count']
+        has_reliability = any(col in df.columns for col in reliability_cols)
+
+        if not has_reliability:
+            section += "*缺少可靠性指标（Gate-0 未启用）*\n"
+            section += "\n建议在回测中启用 Gate-0 数据熔断机制：\n"
+            section += "```yaml\n"
+            section += "reliability:\n"
+            section += "  thresholds:\n"
+            section += "    score_missing_rate_max: 0.02\n"
+            section += "    factor_missing_rate_max: 0.05\n"
+            section += "  on_breach:\n"
+            section += "    action: 'freeze_rebalance'\n"
+            section += "```\n"
+            return section
+
+        # 计算统计值
+        gate0_trigger_rate = df['gate0_trigger_rate'].mean() if 'gate0_trigger_rate' in df.columns else 0
+        score_missing_rate = df['avg_score_missing_rate'].mean() if 'avg_score_missing_rate' in df.columns else 0
+        factor_missing_rate = df['avg_factor_missing_rate'].mean() if 'avg_factor_missing_rate' in df.columns else 0
+        freeze_count = df['freeze_rebalance_count'].sum() if 'freeze_rebalance_count' in df.columns else 0
+        reduce_count = df['reduce_only_count'].sum() if 'reduce_only_count' in df.columns else 0
+
+        # 判断状态
+        trigger_status = '✓' if gate0_trigger_rate <= 0.05 else '✗'
+        score_status = '✓' if score_missing_rate <= 0.01 else '✗'
+        factor_status = '✓' if factor_missing_rate <= 0.03 else '✗'
+
+        section += f"### 整体评估\n\n"
+        section += f"| 指标 | 平均值 | 阈值 | 状态 |\n"
+        section += f"|------|--------|------|------|\n"
+        section += f"| Gate-0 触发率 | {gate0_trigger_rate:.2%} | ≤5% | {trigger_status} |\n"
+        section += f"| 得分缺失率 | {score_missing_rate:.2%} | ≤1% | {score_status} |\n"
+        section += f"| 因子缺失率 | {factor_missing_rate:.2%} | ≤3% | {factor_status} |\n"
+
+        section += f"\n### 熔断统计\n\n"
+        section += f"- 冻结调仓次数: {int(freeze_count)}\n"
+        section += f"- 仅减仓次数: {int(reduce_count)}\n"
+
+        # 严重程度判断
+        if gate0_trigger_rate > 0.10 or score_missing_rate > 0.02:
+            severity = "🔴 严重 - 数据质量问题频发"
+        elif gate0_trigger_rate > 0.05 or score_missing_rate > 0.01:
+            severity = "🟡 警告 - 需关注数据可靠性"
+        else:
+            severity = "🟢 正常 - 数据可靠性良好"
+
+        section += f"\n**严重程度**: {severity}\n"
+
+        return section
 
     def _generate_list_fixation_section(self, df: pd.DataFrame) -> str:
         """生成名单固化诊断章节"""

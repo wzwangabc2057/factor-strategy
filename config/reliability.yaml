@@ -1,0 +1,63 @@
+# 可靠性配置 v3.0
+# Gate-0: 数据/信号熔断
+
+reliability:
+  version: "3.0.0"
+
+  # ==================== 熔断阈值 ====================
+  thresholds:
+    score_missing_rate_max: 0.02       # 得分缺失率>2%视为异常
+    factor_missing_rate_max: 0.05      # 因子缺失率>5%视为异常
+    data_freshness_hours_max: 48       # 数据陈旧>48小时异常
+
+  # ==================== 熔断行为 ====================
+  on_breach:
+    action: "freeze_rebalance"         # freeze_rebalance / reduce_only
+    reduce_only_ratio: 0.8             # reduce_only时最多降到80%仓位
+    log_prefix: "[Gate-0]"
+
+  # ==================== 恢复策略 ====================
+  recovery:
+    cooldown_periods: 2                # 熔断后冷却期
+    gradual_recovery: true              # 渐进恢复
+    recovery_ratio: 0.5                 # 每期恢复50%仓位
+
+  # ==================== 日志与报告 ====================
+  logging:
+    log_all_breaches: true
+    log_prefix: "[Gate-0]"
+    output_to_metrics: true
+    output_to_report: true
+
+  # ==================== 统计 ====================
+  stats:
+    track_missing_rates: true
+    track_breach_history: true
+    track_recovery_history: true
+
+# ==================== 过滤原因标签 ====================
+filter_tags:
+  enabled: true
+  tags:
+    - missing_factor          # 因子数据缺失
+    - low_liquidity           # 流动性不足
+    - suspended               # 停牌
+    - limit_up                # 涨停
+    - limit_down              # 跌停
+    - st_stock                # ST股票
+    - new_listing             # 新股
+    - blacklisted             # 黑名单
+    - missing_price           # 价格缺失
+    - data_quality_issue      # 数据质量问题
+
+# ==================== Core/Satellite 权重优化 ====================
+portfolio_structure:
+  core:
+    allocation: "softmax"              # softmax / linear / equal_weight
+    temperature: 1.5                   # softmax温度（越高越平滑）
+    preserve_top_n: 5                  # 保护前N名
+    min_weight: 0.005                  # 最小权重（避免过小）
+  satellite:
+    allocation: "linear"               # linear / softmax
+    top10_cap: 0.30                    # Top10权重上限
+    min_weight: 0.002

@@ -1,9 +1,9 @@
-# 双层组合结构配置 v3.0
-# Core Layer: 核心池（低频、稳健）
-# Satellite Layer: 卫星池（高频、轮动）
+# 双层组合结构配置 v3.1
+# Core Layer: 核心池（低频、稳健）- 支持softmax软分配
+# Satellite Layer: 卫星池（高频、轮动）- 支持Top10权重上限
 
 portfolio_structure:
-  version: "3.0.0"
+  version: "3.1.0"
   enabled: false                    # 默认关闭，保持原有行为
 
   # ==================== Core Layer ====================
@@ -14,6 +14,12 @@ portfolio_structure:
     min_hold_period: 60             # 最短持有天数（避免频繁变化）
     max_core_weight_sum: 0.60       # 核心仓位总占比上限
 
+    # v3.1: 权重分配方式（追回收益关键）
+    allocation: "softmax"           # softmax / linear / equal_weight
+    temperature: 1.5                # softmax温度（越高越平滑，推荐1.2-2.0）
+    preserve_top_n: 5               # 保护前N名权重（避免过低）
+    min_weight: 0.005               # 最小权重（避免过小）
+
     # 核心池选择逻辑（复现固化逻辑）
     selection:
       use_fixation_logic: true      # 使用固化逻辑选择核心
@@ -21,17 +27,17 @@ portfolio_structure:
       stability_threshold: 0.7      # 稳定性阈值（出现频率>70%）
       score_margin_min: 5.0         # 分数优势最小值（与边界分差）
 
-    # 核心池权重分配
-    weighting:
-      method: "equal_weight"        # equal_weight / score_proportional / risk_parity
-      max_single_weight: 0.04       # 单票上限（核心层内）
-
   # ==================== Satellite Layer ====================
   satellite:
     method: "factor_rotation"       # 因子轮动
     n: 40                           # 卫星池目标数量
     rebalance_frequency: "monthly"  # 卫星池调整频率
     weight_sum: 0.40                # 卫星仓位总占比
+
+    # v3.1: 权重分配方式
+    allocation: "linear"            # linear / softmax / equal_weight
+    top10_cap: 0.30                 # Top10权重上限（避免再次winner-take-all）
+    min_weight: 0.002               # 最小权重
 
     # 卫星池选择逻辑
     selection:
