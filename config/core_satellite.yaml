@@ -1,0 +1,67 @@
+# 双层组合结构配置 v3.0
+# Core Layer: 核心池（低频、稳健）
+# Satellite Layer: 卫星池（高频、轮动）
+
+portfolio_structure:
+  version: "3.0.0"
+  enabled: false                    # 默认关闭，保持原有行为
+
+  # ==================== Core Layer ====================
+  core:
+    method: "fixation_core"         # 从固化逻辑提取的核心选择法
+    k: 30                           # 核心池大小
+    rebalance_frequency: "quarterly"  # 核心池调整频率：monthly/quarterly/bi_annual
+    min_hold_period: 60             # 最短持有天数（避免频繁变化）
+    max_core_weight_sum: 0.60       # 核心仓位总占比上限
+
+    # 核心池选择逻辑（复现固化逻辑）
+    selection:
+      use_fixation_logic: true      # 使用固化逻辑选择核心
+      top_n_from_fixation: 50       # 从固化分析取Top50候选
+      stability_threshold: 0.7      # 稳定性阈值（出现频率>70%）
+      score_margin_min: 5.0         # 分数优势最小值（与边界分差）
+
+    # 核心池权重分配
+    weighting:
+      method: "equal_weight"        # equal_weight / score_proportional / risk_parity
+      max_single_weight: 0.04       # 单票上限（核心层内）
+
+  # ==================== Satellite Layer ====================
+  satellite:
+    method: "factor_rotation"       # 因子轮动
+    n: 40                           # 卫星池目标数量
+    rebalance_frequency: "monthly"  # 卫星池调整频率
+    weight_sum: 0.40                # 卫星仓位总占比
+
+    # 卫星池选择逻辑
+    selection:
+      exclude_core: true            # 排除核心池股票
+      allow_overlap: 0              # 允许重叠数量（0=完全排除）
+      factor_focus:                 # 卫星层因子侧重
+        momentum: 0.3
+        reversal: 0.3
+        value: 0.2
+        quality: 0.2
+
+    # 约束
+    constraints:
+      industry_cap: 0.30            # 单行业上限
+      single_cap: 0.08              # 单票上限（卫星层内）
+      min_adv: 5000000              # 最小流动性（卫星需要更高流动性）
+
+    # 卫星层微调器（anti_fixation 作为卫星层工具）
+    anti_fixation:
+      enabled: false                # 默认关闭
+      apply_to_satellite_only: true
+
+  # ==================== 整体约束 ====================
+  global_constraints:
+    max_turnover_monthly: 0.08      # 总换手上限
+    cash_ratio_min: 0.02            # 最小现金比例
+    max_single_stock_total: 0.08    # 总单票上限（core+satellite合并后）
+
+  # ==================== 与反固化机制的关系 ====================
+  anti_fixation_role: |
+    固化逻辑 -> core layer（低频稳健）
+    轮动与分散 -> satellite layer（高频轮动）
+    惩罚机制 -> satellite layer optional（作为微调器）
