@@ -1,0 +1,94 @@
+# 策略参数配置 v3.0
+# 用于生产环境的策略参数
+
+strategy:
+  name: "R5_aggressive_v3"
+  version: "3.0.0"
+  description: "激进型多因子策略 - 质量成长导向"
+
+# 因子权重配置
+factors:
+  weights:
+    # 价值因子
+    dividend_yield: 0.02
+    pe_value: 0.02
+    # 质量因子
+    roe: 0.14
+    roe_stability: 0.08
+    cash_flow_quality: 0.04
+    # 成长因子
+    profit_growth: 0.26
+    revenue_growth: 0.12
+    peg: 0.18
+    # 规模因子
+    small_cap: 0.06
+    # 动量/反转因子
+    momentum: 0.06
+    reversal: 0.02
+    # 风险因子
+    low_volatility: 0.00
+
+# 权重倾斜配置
+weight_tilt:
+  enabled: true
+  method: "nonlinear"  # linear / nonlinear
+  # 非线性倾斜参数
+  top_10_pct_boost: 1.30      # Top10%额外加成30%
+  top_20_pct_boost: 1.15      # Top20%加成15%
+  bottom_10_pct_penalty: 0.70  # Bottom10%低配30%
+  bottom_20_pct_penalty: 0.85  # Bottom20%低配15%
+  # 线性倾斜参数
+  tilt_strength: 1.0
+
+# 反转因子配置
+reversal:
+  enabled: true
+  roe_threshold: 6.0           # ROE>6%
+  # 回撤阈值与加分
+  drawdown_bonus:
+    - threshold: 25            # 回撤>25%
+      bonus: 20
+    - threshold: 20            # 回撤>20%
+      bonus: 15
+    - threshold: 15            # 回撤>15%
+      bonus: 10
+    - threshold: 10            # 回撤>10%
+      bonus: 6
+    - threshold: 5             # 回撤>5%
+      bonus: 3
+
+# 市场环境动态调整
+market_regime:
+  # 牛市参数
+  bull:
+    max_single_weight: 0.12    # 单股上限12%
+    tilt_multiplier: 1.3       # 倾斜系数1.3
+    weight_multiplier: 1.5     # max_weight乘数
+  # 熊市参数
+  bear:
+    max_single_weight: 0.06    # 单股上限6%
+    tilt_multiplier: 0.5       # 倾斜系数0.5
+    weight_multiplier: 0.75
+  # 震荡市参数
+  volatile:
+    max_single_weight: 0.08    # 单股上限8%
+    tilt_multiplier: 0.7       # 倾斜系数0.7
+    weight_multiplier: 0.9
+
+# 回测配置
+backtest:
+  start_date: "2015-01-01"
+  end_date: "2024-12-31"
+  initial_capital: 1000000
+  random_seed: 42             # 固定随机种子保证可复现
+
+# 调仓配置
+rebalance:
+  frequency: "monthly"         # monthly / quarterly
+  min_trade_value: 5000        # 最小交易金额
+  turnover_limit: 0.08         # 月换手上限8%
+
+# 持仓约束
+constraints:
+  min_weight: 0.002            # 最小权重0.2%
+  max_position_count: 100      # 最大持仓数

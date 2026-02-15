@@ -1,0 +1,125 @@
+# 风控配置 v3.0
+# 三档分层风控机制
+
+risk_control:
+  version: "3.0.0"
+  enabled: true
+
+  # ==================== Tier 1: 趋势市 ====================
+  tier1_trend:
+    description: "正常运行模式 - 趋势明确"
+    detect:
+      # 均线多头排列
+      - condition: "ma20 > ma60"
+        weight: 1.0
+      # ADX显示趋势强度
+      - condition: "adx > 20"
+        weight: 0.5
+      # 中期上涨趋势
+      - condition: "index_return_60d > 0.05"
+        weight: 0.5
+      # 综合判断阈值
+      score_threshold: 1.0
+    action:
+      position_ratio: 1.0        # 满仓
+      max_single_weight: 0.12    # 单股上限12%
+      allow_buy: true            # 允许买入
+      cash_ratio_min: 0.02       # 最小现金2%
+    exit:
+      - condition: "ma20 < ma60 * 0.98"
+        description: "均线死叉"
+      - condition: "index_return_20d < -0.05"
+        description: "短期急跌5%"
+
+  # ==================== Tier 2: 震荡市 ====================
+  tier2_volatile:
+    description: "降仓观望模式 - 震荡无趋势"
+    detect:
+      # 均线纠缠
+      - condition: "abs(ma20 / ma60 - 1) < 0.02"
+        weight: 1.0
+      # 无明确趋势
+      - condition: "adx < 20"
+        weight: 1.0
+      # 波动率偏高
+      - condition: "volatility_20d > 0.25"
+        weight: 0.5
+      score_threshold: 1.0
+    action:
+      position_ratio: 0.85       # 降仓至85%
+      max_single_weight: 0.08    # 单股上限8%
+      allow_buy: true            # 允许买入
+      cash_ratio_min: 0.10       # 最小现金10%
+    exit:
+      - condition: "ma20 > ma60 * 1.02"
+        description: "突破向上"
+      - condition: "index_return_60d < -0.10"
+        description: "确认熊市"
+
+  # ==================== Tier 3: 急跌市 ====================
+  tier3_crash:
+    description: "防御模式 - 急跌熊市"
+    detect:
+      # 短期急跌
+      - condition: "index_return_20d < -0.10"
+        weight: 2.0
+      # 均线空头排列
+      - condition: "ma20 < ma60 * 0.95"
+        weight: 1.0
+      # 从高点回撤
+      - condition: "drawdown_from_peak > 0.15"
+        weight: 1.5
+      # 下跌股票占比
+      - condition: "decline_stocks_ratio > 0.7"
+        weight: 1.0
+      score_threshold: 1.5
+    action:
+      position_ratio: 0.5        # 降仓至50%
+      max_single_weight: 0.05    # 单股上限5%
+      allow_buy: false           # 禁止买入
+      cash_ratio_min: 0.40       # 最小现金40%
+      trigger_stop_loss: true    # 触发个股止损
+    exit:
+      - condition: "index_return_20d > 0"
+        description: "止跌"
+      - condition: "ma20 > ma60 * 0.98"
+        description: "均线修复"
+      - condition: "consecutive_up_days >= 3"
+        description: "连续3日上涨"
+      # 所有条件满足才退出
+      exit_mode: "any"           # any / all
+
+# ==================== 止损配置 ====================
+stop_loss:
+  enabled: true
+  # 个股止损
+  single_stock:
+    enabled: true
+    threshold: -0.20             # 跌幅20%触发
+    action: "reduce_half"        # reduce_half / full_exit
+  # 组合止损
+  portfolio:
+    enabled: true
+    daily_threshold: -0.03       # 单日跌3%告警
+    weekly_threshold: -0.08      # 单周跌8%告警
+    monthly_threshold: -0.12     # 单月跌12%触发减仓
+
+# ==================== 暴露监控 ====================
+exposure_monitor:
+  enabled: true
+  # 市值暴露
+  size_beta_limit: 0.3
+  # 价值暴露
+  value_beta_limit: 0.3
+  # 行业集中度
+  industry_concentration_limit: 0.30
+  # 单股集中度
+  top10_weight_limit: 0.60
+
+# ==================== 换手控制 ====================
+turnover_control:
+  enabled: true
+  monthly_limit: 0.08            # 月换手上限8%
+  daily_limit: 0.03              # 日换手上限3%
+  # 超限处理
+  excess_action: "scale_down"    # scale_down / hold / alert
