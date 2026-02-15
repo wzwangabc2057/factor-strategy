@@ -12,9 +12,16 @@
 
 运行:
     pytest tests/test_production.py -v
+    或
+    python tests/test_production.py
 """
 
-import pytest
+try:
+    import pytest
+    HAS_PYTEST = True
+except ImportError:
+    HAS_PYTEST = False
+
 import numpy as np
 import pandas as pd
 import sys
@@ -345,4 +352,44 @@ class TestIntegration:
 
 
 if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+    if HAS_PYTEST:
+        pytest.main([__file__, '-v'])
+    else:
+        # 无pytest时手动运行
+        print("运行测试 (无pytest)...\n")
+
+        test_classes = [
+            TestWeightsNormalization,
+            TestMaxSingleWeight,
+            TestTurnoverLimit,
+            TestRiskTierDetection,
+            TestCostModel,
+            TestSlippageRequired,
+            TestIntegration,
+        ]
+
+        passed = 0
+        failed = 0
+
+        for test_class in test_classes:
+            try:
+                instance = test_class()
+            except Exception as e:
+                print(f"✗ {test_class.__name__} 初始化失败: {e}")
+                continue
+
+            for method_name in dir(instance):
+                if method_name.startswith('test_'):
+                    try:
+                        method = getattr(instance, method_name)
+                        method()
+                        print(f'✓ {test_class.__name__}.{method_name}')
+                        passed += 1
+                    except AssertionError as e:
+                        print(f'✗ {test_class.__name__}.{method_name}: {e}')
+                        failed += 1
+                    except Exception as e:
+                        print(f'✗ {test_class.__name__}.{method_name}: {type(e).__name__}: {e}')
+                        failed += 1
+
+        print(f'\n总计: {passed} 通过, {failed} 失败')
