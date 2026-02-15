@@ -57,6 +57,11 @@ class RiskTierManager:
         self.tier_history = []
         self.tier_counts = {'tier1_trend': 0, 'tier2_volatile': 0, 'tier3_crash': 0}
 
+        # Gate-2: 降级模式跟踪 (No Silent Fallback)
+        self.regime_proxy_used = None  # 记录使用的代理类型
+        self.proxy_degradation_count = 0
+        self.index_data_available = True
+
     def _default_config(self) -> Dict:
         """默认配置"""
         return {
@@ -216,19 +221,43 @@ class RiskTierManager:
 
     def detect_tier(self,
                     market_data: pd.Series = None,
-                    indicators: Dict = None) -> Tuple[str, Dict]:
+                    indicators: Dict = None,
+                    data_source: str = None) -> Tuple[str, Dict]:
         """
         检测当前风控档位
 
         Args:
             market_data: 价格序列
             indicators: 预计算的指标(可选)
+            data_source: 数据来源 ('index', 'stock_proxy', 'default')
 
         Returns:
             (档位名称, 动作配置)
         """
         if not self.enabled:
             return 'tier1_trend', self.tier_configs['tier1_trend'].get('action', {})
+
+        # Gate-2: 记录数据来源和代理使用情况
+        if data_source is None:
+            # 自动检测数据来源
+            if market_data is not None and len(market_data) > 0:
+                data_source = 'index'  # 假设是指数数据
+            else:
+                data_source = 'default'
+
+        # 检测是否使用代理
+        if data_source == 'stock_proxy':
+            self.regime_proxy_used = 'stock_average'
+            self.proxy_degradation_count += 1
+            self.index_data_available = False
+            logger.warning("[Gate-2] 风控检测使用股票均价代理 (regime_proxy_used=stock_average)")
+        elif data_source == 'default':
+            self.regime_proxy_used = 'default_config'
+            self.index_data_available = False
+            logger.warning("[Gate-2] 风控检测使用默认配置 (regime_proxy_used=default_config)")
+        else:
+            self.regime_proxy_used = None
+            self.index_data_available = True
 
         # 计算指标
         if indicators is None and market_data is not None:
@@ -255,7 +284,8 @@ class RiskTierManager:
                 'from_tier': self.current_tier,
                 'to_tier': new_tier,
                 'scores': scores,
-                'indicators': indicators
+                'indicators': indicators,
+                'regime_proxy_used': self.regime_proxy_used  # Gate-2: 记录代理使用
             })
             self.current_tier = new_tier
 
@@ -334,7 +364,25 @@ class RiskTierManager:
             'tier3_dates': [
                 h['timestamp'] for h in self.tier_history
                 if h['to_tier'] == 'tier3_crash'
-            ]
+            ],
+            # Gate-2: 降级模式可见性
+            'regime_proxy_used': self.regime_proxy_used,
+            'index_data_available': self.index_data_available,
+            'proxy_degradation_count': self.proxy_degradation_count
+        }
+
+    def get_degradation_stats(self) -> Dict:
+        """
+        Gate-2: 获取降级统计
+
+        Returns:
+            降级统计字典
+        """
+        return {
+            'regime_proxy_used': self.regime_proxy_used,
+            'index_data_available': self.index_data_available,
+            'proxy_degradation_count': self.proxy_degradation_count,
+            'has_proxy_degradation': self.regime_proxy_used is not None
         }
 
 

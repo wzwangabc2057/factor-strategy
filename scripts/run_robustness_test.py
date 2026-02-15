@@ -89,6 +89,14 @@ class RobustnessTestRunner:
         'monthly_turnover': {'max': 0.10, 'target': 0.06},
     }
 
+    # Gate-4: KPI阈值定义
+    KPI_THRESHOLDS = {
+        'annual_return': {'pass_min': 0.05, 'fail_max': -0.05, 'weight': 1.0},
+        'max_drawdown': {'pass_min': -0.25, 'fail_max': -0.35, 'weight': 0.8},
+        'sharpe': {'pass_min': 0.5, 'fail_max': 0.0, 'weight': 1.0},
+        'monthly_turnover': {'pass_max': 0.10, 'fail_min': 0.15, 'weight': 0.5},
+    }
+
     def __init__(self,
                  output_dir: str = 'results/robustness',
                  fast_mode: bool = False,
@@ -154,14 +162,17 @@ class RobustnessTestRunner:
 
                 # 评估结果
                 metrics = result.get('enhanced', {})
-                passed = self._evaluate_pass_criteria(metrics)
+                passed, fail_reasons = self._evaluate_pass_criteria(metrics)
 
+                # Gate-4: 添加PASS/FAIL字段
                 results.append({
                     'test_id': wf_config['id'],
                     'test_type': 'walk_forward',
                     'test_year': test_year,
                     **metrics,
-                    'passed': passed
+                    'passed': passed,
+                    'fail_reason_top3': self._get_fail_reason_top3(metrics),  # Gate-4
+                    'regime_bucket': self._determine_regime_bucket(metrics)   # Gate-4
                 })
 
                 status = "✓ PASS" if passed else "✗ FAIL"
@@ -231,14 +242,17 @@ class RobustnessTestRunner:
                 )
 
                 metrics = result.get('enhanced', {})
-                passed = self._evaluate_pass_criteria(metrics)
+                passed, fail_reasons = self._evaluate_pass_criteria(metrics)
 
+                # Gate-4: 添加PASS/FAIL字段
                 results.append({
                     'test_id': f'PARAM-{i+1}',
                     'test_type': 'parameter_sensitivity',
                     **params,
                     **metrics,
-                    'passed': passed
+                    'passed': passed,
+                    'fail_reason_top3': self._get_fail_reason_top3(metrics),  # Gate-4
+                    'regime_bucket': self._determine_regime_bucket(metrics)   # Gate-4
                 })
 
                 if (i + 1) % 10 == 0:
@@ -290,14 +304,17 @@ class RobustnessTestRunner:
                 )
 
                 metrics = result.get('enhanced', {})
-                passed = self._evaluate_pass_criteria(metrics)
+                passed, fail_reasons = self._evaluate_pass_criteria(metrics)
 
+                # Gate-4: 添加PASS/FAIL字段
                 results.append({
                     'test_id': f'COST-{slippage*100:.1f}bp',
                     'test_type': 'cost_sensitivity',
                     'slippage': slippage,
                     **metrics,
-                    'passed': passed
+                    'passed': passed,
+                    'fail_reason_top3': self._get_fail_reason_top3(metrics),  # Gate-4
+                    'regime_bucket': self._determine_regime_bucket(metrics)   # Gate-4
                 })
 
                 logger.info(f"  滑点{slippage*100:.2f}%: 年化{metrics.get('annual_return', 0)*100:.2f}%, "
@@ -313,17 +330,63 @@ class RobustnessTestRunner:
 
         return results
 
-    def _evaluate_pass_criteria(self, metrics: Dict) -> bool:
-        """评估是否通过门槛"""
+    def _evaluate_pass_criteria(self, metrics: Dict) -> Tuple[bool, List[str]]:
+        """
+        Gate-4: 评估是否通过门槛，返回失败原因
+
+        Args:
+            metrics: 指标字典
+
+        Returns:
+            (是否通过, 失败原因列表)
+        """
+        fail_reasons = []
+
         for key, criteria in self.PASS_CRITERIA.items():
             value = metrics.get(key, 0)
 
             if 'min' in criteria and value < criteria['min']:
-                return False
+                fail_reasons.append(f"{key}={value:.2%} < 门槛{criteria['min']:.2%}")
             if 'max' in criteria and value > criteria['max']:
-                return False
+                fail_reasons.append(f"{key}={value:.2%} > 上限{criteria['max']:.2%}")
 
-        return True
+        passed = len(fail_reasons) == 0
+        return passed, fail_reasons
+
+    def _get_fail_reason_top3(self, metrics: Dict) -> List[str]:
+        """
+        Gate-4: 获取Top3失败原因
+
+        Args:
+            metrics: 指标字典
+
+        Returns:
+            Top3失败原因列表
+        """
+        _, fail_reasons = self._evaluate_pass_criteria(metrics)
+        return fail_reasons[:3]
+
+    def _determine_regime_bucket(self, metrics: Dict) -> str:
+        """
+        Gate-4: 确定市场环境桶
+
+        Args:
+            metrics: 指标字典
+
+        Returns:
+            市场环境类型
+        """
+        annual_return = metrics.get('annual_return', 0)
+        max_drawdown = metrics.get('max_drawdown', 0)
+        sharpe = metrics.get('sharpe', 0)
+
+        # 简单分类逻辑
+        if annual_return > 0.15 and sharpe > 1.0:
+            return 'bull_market'
+        elif annual_return < 0 or max_drawdown < -0.20:
+            return 'bear_market'
+        else:
+            return 'sideways_market'
 
     def generate_report(self, all_results: List[Dict]) -> Tuple[str, str]:
         """

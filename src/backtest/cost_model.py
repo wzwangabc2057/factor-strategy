@@ -53,8 +53,11 @@ class CostModel:
         self.impact_config = self.config.get('impact_cost', {})
         self.spread_config = self.config.get('spread', {})
 
-        # 记录是否使用降级模式
+        # Gate-2: 降级模式统计 (No Silent Fallback)
         self.impact_fallback = False
+        self.impact_fallback_count = 0
+        self.impact_total_count = 0
+        self.degradation_events = []  # 记录降级事件详情
 
     def _default_config(self) -> Dict:
         """默认配置"""
@@ -122,19 +125,35 @@ class CostModel:
         Returns:
             (冲击成本, 是否使用降级模式)
         """
+        # Gate-2: 统计总调用次数
+        self.impact_total_count += 1
+
         if not self.impact_config.get('enabled', True):
             return 0.0, False
 
         coefficient = self.impact_config.get('coefficient', 0.1)
 
         if adv is None or adv <= 0:
-            # 降级模式
+            # Gate-2: 降级模式 - 记录详情
+            self.impact_fallback_count += 1
             fallback_mode = self.impact_config.get('fallback_mode', 'zero')
+
+            # 记录降级事件
+            self.degradation_events.append({
+                'type': 'impact_fallback',
+                'reason': 'no_adv_data',
+                'trade_value': trade_value,
+                'market_cap': market_cap,
+                'fallback_mode': fallback_mode
+            })
+
             if fallback_mode == 'fixed_rate':
                 fallback_rate = self.impact_config.get('fallback_rate', 0.001)
+                logger.warning(f"[Gate-2] 冲击成本降级: 无ADV数据, 使用固定费率{fallback_rate:.4%}")
                 return trade_value * fallback_rate, True
             else:
                 # zero模式，返回0
+                logger.warning(f"[Gate-2] 冲击成本降级: 无ADV数据, 使用zero模式")
                 return 0.0, True
 
         # 正常计算: impact = k * sqrt(trade_value / ADV)
@@ -272,7 +291,27 @@ class CostModel:
             'total_trade_value': total_trade_value,
             'cost_ratio': total_cost / total_trade_value if total_trade_value > 0 else 0,
             'trade_count': len(trades),
-            'impact_fallback_count': impact_fallback_count
+            'impact_fallback_count': impact_fallback_count,
+            # Gate-2: 降级率
+            'impact_fallback_rate': impact_fallback_count / len(trades) if len(trades) > 0 else 0.0
+        }
+
+    def get_degradation_stats(self) -> Dict:
+        """
+        Gate-2: 获取降级统计
+
+        Returns:
+            降级统计字典
+        """
+        fallback_rate = self.impact_fallback_count / self.impact_total_count if self.impact_total_count > 0 else 0.0
+
+        return {
+            'impact_fallback_count': self.impact_fallback_count,
+            'impact_total_count': self.impact_total_count,
+            'impact_fallback_rate': fallback_rate,
+            'has_fallback': self.impact_fallback,
+            'degradation_events': self.degradation_events[-10:],  # 最近10条
+            'degradation_events_total': len(self.degradation_events)
         }
 
 

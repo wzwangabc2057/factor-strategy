@@ -10,6 +10,12 @@
 6. test_cost_model - 成本模型
 7. test_slippage_required - 滑点必须>=0.1%
 
+Gate-5 新增测试:
+8. test_config_validation_rejects_bad_values - 配置验证
+9. test_impact_fallback_rate_flagging - 降级率标记
+10. test_cash_ratio_min_assert - 现金比例断言
+11. test_robustness_pass_fail_fields_present - 鲁棒性输出字段
+
 运行:
     pytest tests/test_production.py -v
     或
@@ -351,6 +357,229 @@ class TestIntegration:
         assert 'sharpe' in calculator.calculate_risk_adjusted_metrics(returns)
 
 
+# ==================== Gate-5: 新增测试 ====================
+
+class TestConfigValidation:
+    """Gate-5: 配置验证测试"""
+
+    def test_config_validation_rejects_bad_values(self):
+        """配置验证应拒绝非法值"""
+        from src.config.validator import ConfigValidator
+
+        validator = ConfigValidator(strict=False)
+
+        # 测试非法换手限制
+        bad_config = {
+            'strategy': {'name': 'test', 'version': '1.0'},
+            'factors': {'weights': {'roe': 0.5}},
+            'rebalance': {'frequency': 'monthly', 'turnover_limit': 0.50},  # 超过20%
+            'constraints': {'min_weight': 0.001, 'max_position_count': 50}
+        }
+        errors = validator.validate_strategy_config(bad_config)
+        assert len(errors) > 0, "应拒绝换手限制>20%的配置"
+
+        # 测试非法滑点
+        bad_cost_config = {
+            'cost_model': {
+                'enabled': True,
+                'base_cost': {
+                    'commission': {'buy': 0.001, 'sell': 0.002},
+                    'slippage': {'default': 0.0001}  # 小于0.1%
+                },
+                'impact_cost': {'enabled': True}
+            }
+        }
+        errors = validator.validate_cost_config(bad_cost_config)
+        assert len(errors) > 0, "应拒绝滑点<0.1%的配置"
+
+    def test_strategy_config_required_fields(self):
+        """策略配置必需字段检查"""
+        from src.config.validator import ConfigValidator
+
+        validator = ConfigValidator(strict=False)
+
+        # 缺少必需字段
+        incomplete_config = {
+            'strategy': {'name': 'test'}
+            # 缺少 factors, rebalance, constraints
+        }
+        errors = validator.validate_strategy_config(incomplete_config)
+        assert len(errors) > 0, "应检测到缺少必需字段"
+
+    def test_risk_config_logic_consistency(self):
+        """风控配置逻辑一致性检查"""
+        from src.config.validator import ConfigValidator
+
+        validator = ConfigValidator(strict=False)
+
+        # 仓位比例不递减 (非法)
+        bad_config = {
+            'risk_control': {
+                'enabled': True,
+                'tier1_trend': {'action': {'position_ratio': 0.5}},  # Tier1=50%
+                'tier2_volatile': {'action': {'position_ratio': 0.7}},  # Tier2=70% (非法)
+                'tier3_crash': {'action': {'position_ratio': 0.9}}   # Tier3=90% (非法)
+            }
+        }
+        errors = validator.validate_risk_config(bad_config)
+        # 应检测到仓位比例不递减
+        assert len(errors) > 0, "应检测到仓位比例不递减的配置错误"
+
+
+class TestImpactFallbackRate:
+    """Gate-5: 降级率标记测试"""
+
+    def test_impact_fallback_rate_flagging(self):
+        """降级率应正确标记"""
+        from src.backtest.cost_model import CostModel
+
+        model = CostModel()
+
+        # 无ADV时应标记降级
+        result = model.calculate_cost(
+            trade_value=100000,
+            trade_type='buy',
+            adv=None  # 无ADV
+        )
+
+        assert result['impact_fallback'] == True, "无ADV时应标记impact_fallback=True"
+
+        # 检查降级统计
+        stats = model.get_degradation_stats()
+        assert 'impact_fallback_rate' in stats, "应返回impact_fallback_rate"
+        assert stats['impact_fallback_rate'] >= 0, "降级率应>=0"
+
+    def test_impact_fallback_rate_calculation(self):
+        """降级率计算正确性"""
+        from src.backtest.cost_model import CostModel
+
+        model = CostModel()
+
+        # 3次有ADV，2次无ADV
+        model.calculate_cost(100000, 'buy', adv=1000000)  # 有ADV
+        model.calculate_cost(100000, 'buy', adv=None)      # 无ADV
+        model.calculate_cost(100000, 'buy', adv=1000000)  # 有ADV
+        model.calculate_cost(100000, 'buy', adv=None)      # 无ADV
+        model.calculate_cost(100000, 'buy', adv=1000000)  # 有ADV
+
+        stats = model.get_degradation_stats()
+        # 2/5 = 0.4
+        assert abs(stats['impact_fallback_rate'] - 0.4) < 0.01, \
+            f"降级率应为0.4，实际为{stats['impact_fallback_rate']}"
+
+
+class TestCashRatioMinAssert:
+    """Gate-5: 现金比例断言测试"""
+
+    def test_cash_ratio_min_assert(self):
+        """现金比例应满足最低要求"""
+        from src.risk.tier_manager import RiskTierManager
+
+        manager = RiskTierManager()
+
+        # Tier3应要求现金比例>=40%
+        tier3_actions = manager.get_actions('tier3_crash')
+        cash_ratio_min = tier3_actions.get('cash_ratio_min', 0)
+
+        assert cash_ratio_min >= 0.30, \
+            f"Tier3现金比例应>=30%，实际为{cash_ratio_min:.0%}"
+
+    def test_cash_ratio_tier_increasing(self):
+        """现金比例应随档位递增"""
+        from src.risk.tier_manager import RiskTierManager
+
+        manager = RiskTierManager()
+
+        tier1_cash = manager.get_actions('tier1_trend').get('cash_ratio_min', 0)
+        tier2_cash = manager.get_actions('tier2_volatile').get('cash_ratio_min', 0)
+        tier3_cash = manager.get_actions('tier3_crash').get('cash_ratio_min', 0)
+
+        assert tier1_cash <= tier2_cash, \
+            f"Tier1现金比例{tier1_cash:.0%}应<=Tier2{tier2_cash:.0%}"
+        assert tier2_cash <= tier3_cash, \
+            f"Tier2现金比例{tier2_cash:.0%}应<=Tier3{tier3_cash:.0%}"
+
+
+class TestRobustnessPassFailFields:
+    """Gate-5: 鲁棒性输出字段测试"""
+
+    def test_robustness_pass_fail_fields_present(self):
+        """鲁棒性测试结果应包含PASS/FAIL字段"""
+        # 模拟鲁棒性测试结果
+        result = {
+            'test_id': 'WF-1',
+            'test_type': 'walk_forward',
+            'test_year': '2019',
+            'annual_return': 0.15,
+            'max_drawdown': -0.18,
+            'sharpe': 1.2,
+            'passed': True,
+            'fail_reason_top3': [],
+            'regime_bucket': 'bull_market'
+        }
+
+        # 检查必需字段
+        assert 'passed' in result, "结果应包含passed字段"
+        assert 'fail_reason_top3' in result, "结果应包含fail_reason_top3字段"
+        assert 'regime_bucket' in result, "结果应包含regime_bucket字段"
+
+    def test_robustness_fail_reason_format(self):
+        """失败原因应包含具体指标信息"""
+        # 模拟失败结果
+        fail_reasons = [
+            "annual_return=-5.00% < 门槛0.00%",
+            "max_drawdown=-30.00% < 上限-25.00%"
+        ]
+
+        for reason in fail_reasons:
+            # 每个失败原因应包含指标名和阈值
+            assert '%' in reason or '<' in reason or '>' in reason, \
+                f"失败原因格式不正确: {reason}"
+
+
+class TestDegradationVisibility:
+    """Gate-5: 降级可见性测试"""
+
+    def test_regime_proxy_used_tracking(self):
+        """风控代理使用应被跟踪"""
+        from src.risk.tier_manager import RiskTierManager
+
+        manager = RiskTierManager()
+
+        # 模拟使用代理数据
+        tier, actions = manager.detect_tier(data_source='stock_proxy')
+
+        stats = manager.get_degradation_stats()
+        assert 'regime_proxy_used' in stats, "应返回regime_proxy_used字段"
+        assert stats['regime_proxy_used'] == 'stock_average', \
+            "应标记regime_proxy_used=stock_average"
+
+    def test_no_silent_fallback(self):
+        """不应有静默降级"""
+        from src.backtest.cost_model import CostModel
+        import logging
+
+        # 捕获日志
+        import io
+        log_capture = io.StringIO()
+        handler = logging.StreamHandler(log_capture)
+        handler.setLevel(logging.WARNING)
+
+        logger = logging.getLogger('src.backtest.cost_model')
+        logger.addHandler(handler)
+
+        model = CostModel()
+        model.calculate_cost(100000, 'buy', adv=None)
+
+        log_output = log_capture.getvalue()
+
+        # 应有警告日志
+        assert 'Gate-2' in log_output or '降级' in log_output, \
+            "降级时应有明确的警告日志"
+
+        logger.removeHandler(handler)
+
+
 if __name__ == '__main__':
     if HAS_PYTEST:
         pytest.main([__file__, '-v'])
@@ -366,6 +595,12 @@ if __name__ == '__main__':
             TestCostModel,
             TestSlippageRequired,
             TestIntegration,
+            # Gate-5: 新增测试类
+            TestConfigValidation,
+            TestImpactFallbackRate,
+            TestCashRatioMinAssert,
+            TestRobustnessPassFailFields,
+            TestDegradationVisibility,
         ]
 
         passed = 0

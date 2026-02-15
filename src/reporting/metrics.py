@@ -196,7 +196,8 @@ class MetricsCalculator:
                 'impact_cost': 0,
                 'spread': 0,
                 'cost_ratio': 0,
-                'impact_fallback_count': 0
+                'impact_fallback_count': 0,
+                'impact_fallback_rate': 0.0  # Gate-2
             }
 
         total_cost = sum(c.get('total_cost', 0) for c in costs)
@@ -205,6 +206,10 @@ class MetricsCalculator:
         impact = sum(c.get('impact', 0) for c in costs)
         spread = sum(c.get('spread', 0) for c in costs)
         fallback_count = sum(1 for c in costs if c.get('impact_fallback', False))
+
+        # Gate-2: 计算降级率
+        total_trades = sum(c.get('trade_count', 1) for c in costs)
+        fallback_rate = fallback_count / total_trades if total_trades > 0 else 0.0
 
         cost_ratio = total_cost / total_trade_value if total_trade_value else 0
 
@@ -215,7 +220,8 @@ class MetricsCalculator:
             'impact_cost': impact,
             'spread': spread,
             'cost_ratio': cost_ratio,
-            'impact_fallback_count': fallback_count
+            'impact_fallback_count': fallback_count,
+            'impact_fallback_rate': fallback_rate  # Gate-2: 降级率
         }
 
     def calculate_concentration_metrics(self,
@@ -268,7 +274,8 @@ class MetricsCalculator:
                                costs: List[Dict] = None,
                                weights: Dict[str, float] = None,
                                risk_tier_counts: Dict = None,
-                               factor_ic: List[float] = None) -> Dict:
+                               factor_ic: List[float] = None,
+                               degradation_stats: Dict = None) -> Dict:
         """
         计算所有指标
 
@@ -280,6 +287,7 @@ class MetricsCalculator:
             weights: 最终权重
             risk_tier_counts: 风控档位计数
             factor_ic: 因子IC列表
+            degradation_stats: Gate-2 降级统计
 
         Returns:
             完整指标字典
@@ -319,6 +327,16 @@ class MetricsCalculator:
         # 风控指标
         risk_tier_metrics = risk_tier_counts or {}
 
+        # Gate-2: 降级指标
+        degradation_metrics = {}
+        if degradation_stats:
+            degradation_metrics = {
+                'degradation_regime_proxy_used': degradation_stats.get('regime_proxy_used'),
+                'degradation_index_data_available': degradation_stats.get('index_data_available', True),
+                'degradation_proxy_count': degradation_stats.get('proxy_degradation_count', 0),
+                'degradation_impact_fallback_rate': degradation_stats.get('impact_fallback_rate', 0.0)
+            }
+
         # 合并所有指标
         all_metrics = {
             **returns_metrics,
@@ -328,6 +346,7 @@ class MetricsCalculator:
             **{f'cost_{k}': v for k, v in cost_metrics.items()},
             **concentration_metrics,
             **ic_metrics,
+            **degradation_metrics,  # Gate-2
             'risk_tier_counts': risk_tier_metrics,
             'calculation_time': datetime.now().isoformat()
         }

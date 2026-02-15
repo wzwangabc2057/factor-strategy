@@ -89,6 +89,15 @@ class ProductionBacktestEngine:
         self.costs = []
         self.risk_tier_history = []
 
+        # Gate-3: 换手限制审计指标
+        self.turnover_audit = {
+            'turnover_target_list': [],      # 目标换手
+            'turnover_executed_list': [],    # 实际执行换手
+            'turnover_scale_list': [],       # 缩放因子
+            'portfolio_drift_l1_list': [],   # 组合漂移L1
+            'cash_ratio_actual_list': []     # 实际现金比例
+        }
+
     def _load_yaml(self, path: str) -> Dict:
         """加载YAML配置"""
         full_path = os.path.join(os.path.dirname(__file__), '..', path)
@@ -143,7 +152,7 @@ class ProductionBacktestEngine:
     def apply_turnover_limit(self,
                              target_weights: Dict[str, float],
                              current_weights: Dict[str, float],
-                             turnover_limit: float = 0.08) -> Tuple[Dict[str, float], bool]:
+                             turnover_limit: float = 0.08) -> Tuple[Dict[str, float], bool, Dict]:
         """
         应用换手限制
 
@@ -153,7 +162,7 @@ class ProductionBacktestEngine:
             turnover_limit: 换手上限
 
         Returns:
-            (调整后权重, 是否被限制)
+            (调整后权重, 是否被限制, 审计指标)
         """
         # 计算原始换手
         all_codes = set(target_weights.keys()) | set(current_weights.keys())
@@ -162,8 +171,19 @@ class ProductionBacktestEngine:
             for c in all_codes
         ) / 2
 
+        # Gate-3: 计算组合漂移L1
+        portfolio_drift_l1 = raw_turnover
+
+        audit = {
+            'turnover_target': raw_turnover,
+            'turnover_limit': turnover_limit,
+            'was_capped': False,
+            'turnover_scale': 1.0,
+            'portfolio_drift_l1': portfolio_drift_l1
+        }
+
         if raw_turnover <= turnover_limit:
-            return target_weights, False
+            return target_weights, False, audit
 
         # 缩放交易
         scale_factor = turnover_limit / raw_turnover
@@ -182,9 +202,20 @@ class ProductionBacktestEngine:
         if total > 0:
             adjusted_weights = {k: v / total for k, v in adjusted_weights.items()}
 
+        # 计算实际执行换手
+        executed_turnover = sum(
+            abs(adjusted_weights.get(c, 0) - current_weights.get(c, 0))
+            for c in all_codes
+        ) / 2
+
+        # Gate-3: 更新审计指标
+        audit['was_capped'] = True
+        audit['turnover_scale'] = scale_factor
+        audit['turnover_executed'] = executed_turnover
+
         logger.info(f"换手限制生效: {raw_turnover:.2%} -> {turnover_limit:.2%}")
 
-        return adjusted_weights, True
+        return adjusted_weights, True, audit
 
     def run_backtest(self,
                      portfolio: pd.DataFrame,
@@ -301,9 +332,24 @@ class ProductionBacktestEngine:
                     target_weights = {k: v / total for k, v in target_weights.items()}
 
                 # 4. 应用换手限制
-                target_weights, turnover_capped = self.apply_turnover_limit(
+                target_weights, turnover_capped, turnover_audit = self.apply_turnover_limit(
                     target_weights, current_weights, turnover_limit
                 )
+
+                # Gate-3: 记录审计指标
+                self.turnover_audit['turnover_target_list'].append(turnover_audit['turnover_target'])
+                self.turnover_audit['turnover_executed_list'].append(turnover_audit.get('turnover_executed', turnover_audit['turnover_target']))
+                self.turnover_audit['turnover_scale_list'].append(turnover_audit['turnover_scale'])
+                self.turnover_audit['portfolio_drift_l1_list'].append(turnover_audit['portfolio_drift_l1'])
+
+                # Gate-3: 计算实际现金比例
+                cash_ratio_actual = 1.0 - sum(target_weights.values())
+                self.turnover_audit['cash_ratio_actual_list'].append(cash_ratio_actual)
+
+                # Gate-3: 现金比例运行时断言
+                cash_ratio_min = actions.get('cash_ratio_min', 0.02)
+                assert cash_ratio_actual >= cash_ratio_min - 0.01, \
+                    f"[Gate-3] 现金比例{cash_ratio_actual:.2%}低于要求{cash_ratio_min:.2%}"
 
                 # 5. 计算交易成本
                 trades = []
@@ -358,14 +404,33 @@ class ProductionBacktestEngine:
         returns_enhanced = np.array([r['return'] for r in daily_returns_enhanced])
         returns_original = np.array([r['return'] for r in daily_returns_original])
 
+        # Gate-3: 计算换手审计汇总指标
+        turnover_audit_summary = {
+            'turnover_target_avg': np.mean(self.turnover_audit['turnover_target_list']) if self.turnover_audit['turnover_target_list'] else 0,
+            'turnover_executed_avg': np.mean(self.turnover_audit['turnover_executed_list']) if self.turnover_audit['turnover_executed_list'] else 0,
+            'turnover_scale_avg': np.mean(self.turnover_audit['turnover_scale_list']) if self.turnover_audit['turnover_scale_list'] else 1.0,
+            'portfolio_drift_l1_avg': np.mean(self.turnover_audit['portfolio_drift_l1_list']) if self.turnover_audit['portfolio_drift_l1_list'] else 0,
+            'cash_ratio_actual_avg': np.mean(self.turnover_audit['cash_ratio_actual_list']) if self.turnover_audit['cash_ratio_actual_list'] else 0,
+        }
+
+        # Gate-2: 获取降级统计
+        degradation_stats = {
+            **self.risk_manager.get_degradation_stats(),
+            **self.cost_model.get_degradation_stats()
+        }
+
         metrics = self.metrics_calculator.calculate_all_metrics(
             returns=returns_enhanced,
             benchmark_returns=returns_original,
             turnovers=self.turnovers,
             costs=self.costs,
             weights=current_weights,
-            risk_tier_counts=self.risk_manager.tier_counts
+            risk_tier_counts=self.risk_manager.tier_counts,
+            degradation_stats=degradation_stats
         )
+
+        # Gate-3: 添加换手审计指标
+        metrics.update({f'turnover_audit_{k}': v for k, v in turnover_audit_summary.items()})
 
         # 生成报告
         report_md = self._generate_report(metrics, start_date, end_date, strategy_type)
