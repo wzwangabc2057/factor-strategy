@@ -146,6 +146,48 @@ SL = Stop Loss (止损)
 
 > **注意**: v1.6 因使用了未来函数导致收益被高估约8-10%。实盘请参考v1.7结果。
 
+## 版本路线图
+
+### v1.7 (当前稳定版)
+- 12因子体系，年度调仓
+- 修复未来函数，回测真实可靠
+- R4: 14.66% 年化, R5: 16.61% 年化
+
+### v2.0 (开发中)
+**目标: 18因子 + 季度调仓 + 交易成本**
+
+新增6个因子:
+| 因子 | 数据来源 | 研究依据 |
+|------|---------|---------|
+| 换手率 (turnover) | stock_data_qfq.huanshoulv | A股最显著alpha因子之一，低换手率溢价 |
+| 毛利率 (gross_margin) | stock_financial.gross_profit_margin | 竞争壁垒指标，高毛利=定价权 |
+| PB估值 (pb_value) | valuation_local.pb | 经典价值因子，低PB高收益 |
+| 净利率 (net_margin) | stock_financial.net_profit_margin | 盈利能力核心指标 |
+| 营业利润质量 (operating_quality) | stock_financial.operating_profit/net_profit | 利润含金量，剔除非经常性损益 |
+| 总资产周转率 (asset_turnover) | stock_financial.operating_revenue/total_assets | 经营效率，DuPont分析核心 |
+
+优化项:
+- 调仓频率: 年度 → 季度(1/4/7/10月初)
+- 交易成本: 买入0.026% + 卖出0.126%(含印花税)
+- 权重调整: 集成v2的10档精细权重(0.3x~2.5x)
+- 因子计算: 利用ClickHouse历史数据计算真实ROE稳定性
+
+### v3.0 (规划中)
+- 因子IC分析与因子正交化
+- 机器学习因子合成(XGBoost/LightGBM)
+- 自适应市场环境因子权重
+
+## 文档索引
+
+| 文档 | 路径 | 说明 |
+|------|------|------|
+| 项目说明 | README_original.md | 项目概述、版本说明、回测结果 |
+| v1回测脚本 | run_factor_backtest.py | 12因子年度调仓回测 |
+| v2回测脚本 | run_factor_backtest_v2.py | 18因子季度调仓回测 |
+| 因子计算器v2 | src/data/factor_calculator_v2.py | 增强因子打分逻辑 |
+| 策略模块v2 | src/strategy/enhanced_strategy_v2.py | 10档权重+自适应策略 |
+| 回测引擎 | src/backtest/backtest_engine.py | 模块化回测引擎 |
+
 ## License
 
 MIT
