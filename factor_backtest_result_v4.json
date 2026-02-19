@@ -1,0 +1,162 @@
+{
+  "version": "v4.3",
+  "run_time": "2026-02-18 22:12:36",
+  "config": {
+    "lgb_params": {
+      "objective": "regression",
+      "metric": "rmse",
+      "boosting_type": "gbdt",
+      "num_leaves": 23,
+      "learning_rate": 0.01,
+      "feature_fraction": 0.6,
+      "bagging_fraction": 0.6,
+      "bagging_freq": 5,
+      "reg_alpha": 0.5,
+      "reg_lambda": 2.0,
+      "min_child_samples": 30,
+      "verbose": -1,
+      "n_estimators": 1500,
+      "n_jobs": 4
+    },
+    "xgb_params": {
+      "objective": "reg:squarederror",
+      "max_depth": 4,
+      "learning_rate": 0.01,
+      "subsample": 0.6,
+      "colsample_bytree": 0.6,
+      "reg_alpha": 0.5,
+      "reg_lambda": 2.0,
+      "min_child_weight": 10,
+      "n_estimators": 1500,
+      "n_jobs": 4
+    },
+    "ic_config": {
+      "top_k": 35,
+      "min_observations": 2,
+      "warmup_months": 2
+    },
+    "min_market_cap": 50,
+    "label_period": 21
+  },
+  "experiments": {
+    "V1": {
+      "label": "V1 基线(10因子+年度)",
+      "enhanced": {
+        "annual_return": 0.16265584930010757,
+        "total_return": 1.3858488396494284,
+        "max_drawdown": -0.18339596477101217,
+        "sharpe": 1.0379809877519057,
+        "calmar": 0.886910731668493,
+        "win_rate": 0.5529573590096286,
+        "final_nav": 2.3858488396494284
+      },
+      "original": {
+        "annual_return": 0.16761064773447498,
+        "total_return": 1.445113636058669,
+        "max_drawdown": -0.2475121072592651,
+        "sharpe": 0.9076244996783985,
+        "calmar": 0.6771816118025509,
+        "win_rate": 0.5543328748280605,
+        "final_nav": 2.445113636058669
+      },
+      "total_tx_cost": 0.001035666932454118,
+      "stop_loss_count": 6
+    },
+    "C": {
+      "label": "C V3基线(16因子+半年)",
+      "enhanced": {
+        "annual_return": 0.166953824764706,
+        "total_return": 1.437188064915134,
+        "max_drawdown": -0.17187113536999665,
+        "sharpe": 1.0744818854953808,
+        "calmar": 0.9713895495325326,
+        "win_rate": 0.5550206327372765,
+        "final_nav": 2.437188064915134
+      },
+      "original": {
+        "annual_return": 0.16761064773447498,
+        "total_return": 1.445113636058669,
+        "max_drawdown": -0.2475121072592651,
+        "sharpe": 0.9076244996783985,
+        "calmar": 0.6771816118025509,
+        "win_rate": 0.5543328748280605,
+        "final_nav": 2.445113636058669
+      },
+      "total_tx_cost": 0.0018361026920859704,
+      "stop_loss_count": 6
+    },
+    "V1C": {
+      "label": "V1C 基线(10因子+半年)",
+      "enhanced": {
+        "annual_return": 0.16986526581481853,
+        "total_return": 1.472481324223347,
+        "max_drawdown": -0.17557514899847648,
+        "sharpe": 1.0774497392356546,
+        "calmar": 0.9674789785671348,
+        "win_rate": 0.5529573590096286,
+        "final_nav": 2.472481324223347
+      },
+      "original": {
+        "annual_return": 0.16761064773447498,
+        "total_return": 1.445113636058669,
+        "max_drawdown": -0.2475121072592651,
+        "sharpe": 0.9076244996783985,
+        "calmar": 0.6771816118025509,
+        "win_rate": 0.5543328748280605,
+        "final_nav": 2.445113636058669
+      },
+      "total_tx_cost": 0.001890304809303624,
+      "stop_loss_count": 6
+    },
+    "H": {
+      "label": "H ML季度温和",
+      "enhanced": {
+        "annual_return": 0.16135223741614713,
+        "total_return": 1.3704551518280943,
+        "max_drawdown": -0.1800774490786149,
+        "sharpe": 1.0364657352470774,
+        "calmar": 0.8960157878830621,
+        "win_rate": 0.5522696011004127,
+        "final_nav": 2.3704551518280943
+      },
+      "original": {
+        "annual_return": 0.16761064773447498,
+        "total_return": 1.445113636058669,
+        "max_drawdown": -0.2475121072592651,
+        "sharpe": 0.9076244996783985,
+        "calmar": 0.6771816118025509,
+        "win_rate": 0.5543328748280605,
+        "final_nav": 2.445113636058669
+      },
+      "total_tx_cost": 0.004589695663517372,
+      "stop_loss_count": 6,
+      "ml_train_count": 22,
+      "ic_stats_count": 133
+    },
+    "I": {
+      "label": "I ML季度激进",
+      "enhanced": {
+        "annual_return": 0.14217990105261347,
+        "total_return": 1.15337159171585,
+        "max_drawdown": -0.17953638344363132,
+        "sharpe": 0.9500929368059834,
+        "calmar": 0.7919280667545217,
+        "win_rate": 0.5522696011004127,
+        "final_nav": 2.15337159171585
+      },
+      "original": {
+        "annual_return": 0.16761064773447498,
+        "total_return": 1.445113636058669,
+        "max_drawdown": -0.2475121072592651,
+        "sharpe": 0.9076244996783985,
+        "calmar": 0.6771816118025509,
+        "win_rate": 0.5543328748280605,
+        "final_nav": 2.445113636058669
+      },
+      "total_tx_cost": 0.009095666214798848,
+      "stop_loss_count": 6,
+      "ml_train_count": 22,
+      "ic_stats_count": 133
+    }
+  }
+}

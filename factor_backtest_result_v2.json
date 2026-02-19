@@ -1,0 +1,89 @@
+{
+  "version": "v2.0",
+  "run_time": "2026-02-15 04:55:22",
+  "backtest_period": "2020-01-01 ~ 2025-12-31",
+  "config": {
+    "n_factors": 18,
+    "rebalance": "quarterly",
+    "transaction_costs": {
+      "buy_commission": 0.00026,
+      "sell_commission": 0.00126
+    },
+    "stop_loss": {
+      "enabled": true,
+      "ma_period": 250,
+      "position_reduce": 0.7,
+      "recovery_buffer": 1.02
+    }
+  },
+  "R4_stable": {
+    "enhanced": {
+      "annual_return": 0.13095616540556043,
+      "total_return": 1.0341062010714017,
+      "max_drawdown": -0.13286822154676048,
+      "sharpe": 0.9377612238708001,
+      "calmar": 0.985609379587224,
+      "win_rate": 0.5605226960110041,
+      "final_nav": 2.0341062010714017,
+      "volatility": 0.14204454400362634
+    },
+    "enhanced_no_cost": {
+      "annual_return": 0.13176786300928822,
+      "total_return": 1.0425440041955234,
+      "max_drawdown": -0.1327304876988098,
+      "sharpe": 0.9426610103336721,
+      "calmar": 0.9927475239019241,
+      "win_rate": 0.5605226960110041,
+      "final_nav": 2.0425440041955234,
+      "volatility": 0.14207170137046368
+    },
+    "original": {
+      "annual_return": 0.13986736082304319,
+      "total_return": 1.1283369816127928,
+      "max_drawdown": -0.2036811580389145,
+      "sharpe": 0.8414521905101545,
+      "calmar": 0.6866975923041476,
+      "win_rate": 0.562585969738652,
+      "final_nav": 2.128336981612793,
+      "volatility": 0.17362525232688167
+    },
+    "strategy_type": "stable",
+    "total_tx_cost": 0.004163448941690747,
+    "stop_loss_count": 6
+  },
+  "R5_aggressive": {
+    "enhanced": {
+      "annual_return": 0.15587068989277797,
+      "total_return": 1.3066218085734644,
+      "max_drawdown": -0.15441569333652883,
+      "sharpe": 1.0386636827230742,
+      "calmar": 1.0094225951055258,
+      "win_rate": 0.5612104539202201,
+      "final_nav": 2.3066218085734644,
+      "volatility": 0.15040705562474604
+    },
+    "enhanced_no_cost": {
+      "annual_return": 0.1572969745147108,
+      "total_return": 1.3230926346184129,
+      "max_drawdown": -0.15417982390272478,
+      "sharpe": 1.0466018822553673,
+      "calmar": 1.0202176298628587,
+      "win_rate": 0.5612104539202201,
+      "final_nav": 2.323092634618413,
+      "volatility": 0.1504513502290001
+    },
+    "original": {
+      "annual_return": 0.16761064773447498,
+      "total_return": 1.445113636058669,
+      "max_drawdown": -0.2475121072592651,
+      "sharpe": 0.9076244996783985,
+      "calmar": 0.6771816118025509,
+      "win_rate": 0.5543328748280605,
+      "final_nav": 2.445113636058669,
+      "volatility": 0.19097148703349645
+    },
+    "strategy_type": "aggressive",
+    "total_tx_cost": 0.00715644972460014,
+    "stop_loss_count": 6
+  }
+}
