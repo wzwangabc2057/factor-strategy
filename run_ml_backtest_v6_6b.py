@@ -111,7 +111,7 @@ MAX_TURNOVER = 0.35     # 月度最大换手35%(控制成本)
 HOLDING_BONUS = 0.20    # 已持仓股票的ML分数加成20%(平衡换手与灵活性)
 MIN_MARKET_CAP = 50     # 最小市值50亿
 LABEL_PERIOD = 21       # 标签预测期21天(匹配月度调仓节奏)
-MIN_TRAIN_MONTHS = 24   # 最少训练期24个月
+MIN_TRAIN_MONTHS = 12   # 最少训练期12个月(4年长回测验证更优)
 MIN_TURNOVER_RATE = 0.5 # 20日均换手率下限0.5%
 
 # v6.4B: 去掉回撤熔断, 用动态集中度替代
