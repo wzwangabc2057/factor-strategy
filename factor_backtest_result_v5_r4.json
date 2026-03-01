@@ -1,0 +1,167 @@
+{
+  "version": "v5.0",
+  "config": {
+    "n_stocks": 50,
+    "max_weight": 0.06,
+    "max_turnover": 0.5,
+    "min_market_cap": 50,
+    "label_period": 10,
+    "rebalance": "monthly"
+  },
+  "v5_enhanced": {
+    "annual_return": 0.21357299792270146,
+    "sharpe": 1.1858286496792798,
+    "max_drawdown": -0.17598640329788295,
+    "calmar": 1.2135766963837409,
+    "total_return": 1.103390096662522,
+    "n_days": 968
+  },
+  "r5_baseline": {
+    "annual_return": 0.1349256104772849,
+    "sharpe": 0.7222709698393378,
+    "max_drawdown": -0.24751210725926376,
+    "calmar": 0.5451273150688873,
+    "total_return": 0.6260900849387805,
+    "n_days": 968
+  },
+  "total_tx_cost": 0.008047133333333333,
+  "stop_loss_count": 3,
+  "avg_monthly_turnover": 0.11029513888888888,
+  "avg_monthly_ic": 0.0538441464055033,
+  "yearly_returns": {
+    "v5": {
+      "2022": -0.040809150570642716,
+      "2023": 0.14160667227336177,
+      "2024": 0.27816384063059774,
+      "2025": 0.5028366309785872
+    },
+    "baseline": {
+      "2022": -0.09106446632764176,
+      "2023": 0.08618117044154094,
+      "2024": 0.14160492500533173,
+      "2025": 0.44275775139686635
+    }
+  },
+  "top_features": [
+    {
+      "name": "ext_is_bullish",
+      "importance": 99.00358377257362
+    },
+    {
+      "name": "ext_bb_squeeze",
+      "importance": 84.60370268779806
+    },
+    {
+      "name": "ext_ma_bullish",
+      "importance": 78.00347485998645
+    },
+    {
+      "name": "fund_pb",
+      "importance": 74.40294828950427
+    },
+    {
+      "name": "ext_lower_shadow",
+      "importance": 72.60341460178606
+    },
+    {
+      "name": "ext_macd_hist",
+      "importance": 72.6031577614136
+    },
+    {
+      "name": "ext_macd_signal",
+      "importance": 67.2031938944012
+    },
+    {
+      "name": "ext_momentum_accel",
+      "importance": 61.80291083171032
+    },
+    {
+      "name": "fund_market_cap",
+      "importance": 61.80288083637133
+    },
+    {
+      "name": "fund_momentum",
+      "importance": 54.60324599933811
+    },
+    {
+      "name": "ext_momentum_60d",
+      "importance": 54.60316077913158
+    },
+    {
+      "name": "a158_VSTD_60d",
+      "importance": 54.00309972814284
+    },
+    {
+      "name": "a158_STD_5d",
+      "importance": 52.202922308398406
+    },
+    {
+      "name": "ext_rsi_14",
+      "importance": 52.20289128487929
+    },
+    {
+      "name": "a158_KMAX_10d",
+      "importance": 52.202877449616786
+    },
+    {
+      "name": "ext_price_efficiency",
+      "importance": 51.003034016117454
+    },
+    {
+      "name": "a158_KMAX_5d",
+      "importance": 51.00273228716105
+    },
+    {
+      "name": "fund_avg_turnover",
+      "importance": 49.80321095134131
+    },
+    {
+      "name": "fund_roe",
+      "importance": 49.802679515630004
+    },
+    {
+      "name": "a158_IMAX_5d",
+      "importance": 49.20282964576035
+    },
+    {
+      "name": "ext_return_skew",
+      "importance": 48.60281027588062
+    },
+    {
+      "name": "a158_KMAX_60d",
+      "importance": 48.00239681289531
+    },
+    {
+      "name": "ext_macd",
+      "importance": 47.40290904054418
+    },
+    {
+      "name": "a158_VSTD_20d",
+      "importance": 46.80327912345528
+    },
+    {
+      "name": "ext_body_size",
+      "importance": 46.8032064539846
+    },
+    {
+      "name": "a158_KMIN_5d",
+      "importance": 46.80310348602943
+    },
+    {
+      "name": "ext_upper_shadow",
+      "importance": 46.80309789530001
+    },
+    {
+      "name": "a158_KMIN_60d",
+      "importance": 46.20328751467168
+    },
+    {
+      "name": "fund_pe",
+      "importance": 46.20300751836039
+    },
+    {
+      "name": "ext_rsi_28",
+      "importance": 46.202967958105724
+    }
+  ]
+}

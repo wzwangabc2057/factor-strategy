@@ -1,0 +1,38 @@
+{
+  "run_time": "2026-02-15 12:55:05",
+  "backtest_period": "2020-01-01 ~ 2025-12-31",
+  "R4_stable": {
+    "enhanced": {
+      "annual_return": 0.2417260623749975,
+      "total_return": 2.4874976316565656,
+      "max_drawdown": -0.18319730238245538,
+      "sharpe": 1.339326601916667,
+      "final_nav": 3.4874976316565656
+    },
+    "original": {
+      "annual_return": 0.23330421871614138,
+      "total_return": 2.353209569897583,
+      "max_drawdown": -0.1859591412775251,
+      "sharpe": 1.295057770631141,
+      "final_nav": 3.353209569897583
+    },
+    "strategy_type": "stable"
+  },
+  "R5_aggressive": {
+    "enhanced": {
+      "annual_return": 0.24378892359523485,
+      "total_return": 2.521059248407931,
+      "max_drawdown": -0.22922748518548758,
+      "sharpe": 1.241470764154031,
+      "final_nav": 3.521059248407931
+    },
+    "original": {
+      "annual_return": 0.22626801268020347,
+      "total_return": 2.2443200884073935,
+      "max_drawdown": -0.22835353224064414,
+      "sharpe": 1.1640547235623888,
+      "final_nav": 3.2443200884073935
+    },
+    "strategy_type": "aggressive"
+  }
+}

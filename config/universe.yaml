@@ -1,0 +1,68 @@
+# 股票池配置 v3.0
+# 用于动态构建候选股票池
+
+universe:
+  version: "3.0.0"
+
+  # ==================== 股票池来源 ====================
+  # source: index / liquidity_top / file
+  # - index: 基于指数成分股（需要成分股数据）
+  # - liquidity_top: 按成交额排序取前N
+  # - file: 从本地文件读取（显式固定名单）
+  source: "liquidity_top"
+
+  # ==================== 流动性筛选 (source=liquidity_top) ====================
+  liquidity:
+    top_n: 800                    # 取成交额前800只
+    adv_window: 20                # 20日平均成交额
+    min_adv: 10000000             # 最小日均成交额（1000万）
+    fallback_field: "volume"      # 若amount缺失，降级使用volume
+
+  # ==================== 指数成分 (source=index) ====================
+  index:
+    name: "hs300"                 # hs300 / zz500 / zz1000 / all_a
+    # 若无指数成分数据，降级到 liquidity_top
+    fallback_source: "liquidity_top"
+
+  # ==================== 文件来源 (source=file) ====================
+  file:
+    # 必须显式启用固定名单模式
+    allow_file_pool: false        # 安全开关：默认禁止文件池
+    path: "data/universe.csv"     # 文件路径
+    required_columns: ["code"]    # 必需列
+
+  # ==================== 通用过滤 ====================
+  filters:
+    min_listed_days: 120          # 上市至少120天
+    exclude_st: true              # 排除ST
+    exclude_new_listing: true     # 排除新股
+    exclude_suspended: false      # 排除停牌（预留，需数据支持）
+    exclude_limit_up_down: false  # 排除涨跌停（预留，需数据支持）
+
+  # ==================== 白名单/黑名单 ====================
+  # whitelist: []                 # 白名单（必选）
+  # blacklist: []                 # 黑名单（排除）
+  whitelist: []
+  blacklist: []
+
+  # ==================== 降级策略 ====================
+  degradation:
+    # 当数据缺失时的行为
+    log_warning: true             # 记录警告日志
+    output_metric: true           # 输出到指标
+    # 当 liquidity 筛选失败时的降级
+    fallback_to_all_a: true       # 降级到全A（但记录 degradation）
+
+# ==================== 名单固化检测阈值 (Gate-6) ====================
+list_fixation:
+  enabled: true
+
+  # Jaccard 相似度阈值
+  jaccard_1m_warning: 0.70        # 单期警告阈值
+  jaccard_12m_avg_max: 0.75       # 12期平均最大值（超过则Gate-6失败）
+
+  # Top持仓粘性阈值
+  top_holdings_stickiness_max: 0.80  # Top10保持率最大值
+
+  # 换手缩放检测
+  turnover_scale_warning: 0.5     # 平均缩放因子低于此值警告

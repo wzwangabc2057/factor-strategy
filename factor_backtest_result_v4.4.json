@@ -1,0 +1,106 @@
+{
+  "version": "v4.4",
+  "run_time": "2026-02-19 02:28:26",
+  "optimization": {
+    "method": "Optuna TPE Bayesian",
+    "n_trials": 200,
+    "best_score": 0.5819
+  },
+  "best_params": {
+    "factor_weights": {
+      "pe_value": 0.1898,
+      "momentum": 0.1485,
+      "financial_health": 0.1252,
+      "dividend_yield": 0.1113,
+      "profit_growth": 0.1055,
+      "reversal": 0.0899,
+      "revenue_growth": 0.0721,
+      "small_cap": 0.0719,
+      "low_volatility": 0.0501,
+      "roe": 0.0357
+    },
+    "top_mult": 2.27,
+    "bottom_mult": 0.13,
+    "tiers": [
+      [
+        0.95,
+        2.27
+      ],
+      [
+        0.9,
+        1.9643
+      ],
+      [
+        0.8,
+        1.6586
+      ],
+      [
+        0.6,
+        1.3529
+      ],
+      [
+        0.4,
+        1.0471
+      ],
+      [
+        0.2,
+        0.7414
+      ],
+      [
+        0.1,
+        0.4357
+      ],
+      [
+        0.0,
+        0.13
+      ]
+    ],
+    "rebalance_freq": "semi",
+    "min_market_cap": 30,
+    "ma_period": 200
+  },
+  "baseline_v1c": {
+    "annual_return": 0.16986526581481853,
+    "sharpe": 1.0774497392356546,
+    "max_drawdown": -0.17557514899847648,
+    "calmar": 0.9674789785671348
+  },
+  "optimized": {
+    "annual_return": 0.15909312293178846,
+    "sharpe": 1.0446524282414205,
+    "max_drawdown": -0.16297671355142374,
+    "calmar": 0.9761708864106534,
+    "total_tx_cost": 0.003907192363505108
+  },
+  "walk_forward_folds": [
+    {
+      "fold": "Fold1(2021)",
+      "sharpe": 1.8739360696180591,
+      "annual_return": 0.23587609651274932,
+      "max_drawdown": -0.06728282398205854
+    },
+    {
+      "fold": "Fold2(2022)",
+      "sharpe": -0.2593919816875754,
+      "annual_return": -0.04715438062443922,
+      "max_drawdown": -0.15433427277353595
+    },
+    {
+      "fold": "Fold3(2023)",
+      "sharpe": 0.6868167918093212,
+      "annual_return": 0.0616625994924791,
+      "max_drawdown": -0.08150350859584587
+    },
+    {
+      "fold": "Fold4(2024)",
+      "sharpe": 0.8436873519567933,
+      "annual_return": 0.1720971041960937,
+      "max_drawdown": -0.14517593773162507
+    }
+  ],
+  "validation": {
+    "all_folds_sharpe_gt_09": false,
+    "beats_baseline": "False",
+    "no_extreme_weights": true
+  }
+}

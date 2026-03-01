@@ -1,0 +1,87 @@
+# 反固化机制配置 v3.0
+# 解决名单固化问题，保持风险边界
+
+anti_fixation:
+  version: "3.0.0"
+  enabled: false                # 默认关闭，需显式启用
+
+  # ==================== 目标指标 ====================
+  target:
+    jaccard_12m_avg: 0.70       # 目标12期平均Jaccard
+    max_jaccard_12m: 0.75       # 硬上限
+    stickiness_max: 0.80        # Top10粘性上限
+
+  # ==================== 资源约束 ====================
+  constraints:
+    max_turnover_increase: 0.02  # 允许额外增加的月换手（+2%）
+    min_universe_size: 500       # 最小股票池
+    min_selected_size: 40        # 最小持仓数
+    preserve_top_n: 5            # 保护前N名不扣分（核心持仓）
+
+  # ==================== 机制A: Soft Diversify ====================
+  soft_diversify:
+    enabled: true               # 默认开启（当anti_fixation.enabled时）
+    # 出现频率惩罚
+    frequency_penalty:
+      method: "linear"          # linear / exponential
+      max_penalty_bps: 50       # 最大扣分（基点），例如50=5分
+      lookback_periods: 12      # 回看期数
+      threshold_percentile: 0.8 # 高频阈值（出现>80%期数才扣分）
+    # 保护机制
+    protection:
+      preserve_top_n: 5         # 保护前N名
+      min_score_to_penalize: 60 # 低于此分数的股票不受惩罚
+      max_weight_change: 0.02   # 单股最大权重变动
+
+  # ==================== 机制B: Adaptive Threshold ====================
+  adaptive_threshold:
+    enabled: false              # 默认关闭，实验性
+    trigger:
+      jaccard_trigger: 0.75     # Jaccard超过此值触发
+      stickiness_trigger: 0.80  # 粘性超过此值触发
+      hysteresis: 0.05          # 滞后区间（防止抖动）
+    adjustments:
+      # 非线性加成调整
+      top_boost_decay:
+        from: 1.30
+        to: 1.15
+        steps: 3                # 分3步调整
+      bottom_penalty_relax:
+        from: 0.70
+        to: 0.85
+        steps: 3
+      tilt_strength_decay:
+        from: 1.0
+        to: 0.85
+        steps: 3
+    recovery:
+      cooldown_periods: 3       # 恢复冷却期
+      gradual_recovery: true     # 渐进恢复
+
+  # ==================== 机制C: Score Temperature (预留) ====================
+  score_temperature:
+    enabled: false              # 默认关闭
+    base_temperature: 1.0
+    max_temperature: 1.5
+    trigger_jaccard: 0.80
+
+  # ==================== 降级与日志 ====================
+  degradation:
+    log_all_penalties: true     # 记录所有扣分
+    log_threshold_changes: true # 记录阈值变化
+    output_to_metrics: true     # 输出到指标
+
+# ==================== Gate-6 软硬分级 ====================
+gate6_severity:
+  # 硬失败：直接阻断
+  hard_fail:
+    jaccard_12m_avg: 0.85
+    top_holdings_stickiness: 0.90
+  # 软失败：建议开启反固化
+  soft_fail:
+    jaccard_12m_avg: 0.75
+    top_holdings_stickiness: 0.80
+  # 建议：需要关注
+  warning:
+    jaccard_12m_avg: 0.70
+    top_holdings_stickiness: 0.75

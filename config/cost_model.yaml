@@ -1,0 +1,70 @@
+# 交易成本模型配置 v3.0
+
+cost_model:
+  version: "3.0.0"
+  enabled: true
+
+  # ==================== 基础成本 ====================
+  base_cost:
+    # 佣金
+    commission:
+      buy: 0.00026              # 买入佣金 0.026%
+      sell: 0.00126             # 卖出佣金+印花税 0.126%
+    # 滑点 (可配置覆盖)
+    slippage:
+      default: 0.001            # 默认滑点 0.1%
+      # 敏感性测试用值
+      sensitivity_test_values:
+        - 0.0005                # 0.05%
+        - 0.001                 # 0.1%
+        - 0.002                 # 0.2%
+        - 0.003                 # 0.3%
+
+  # ==================== 冲击成本 ====================
+  impact_cost:
+    enabled: true
+    # 冲击成本系数
+    coefficient: 0.1            # k值
+    # 计算公式: impact = k * sqrt(trade_value / ADV)
+    # ADV: 平均日成交额 (20日rolling mean)
+    # 如果缺ADV数据，使用降级模式
+    fallback_mode: "zero"       # zero / fixed_rate
+    fallback_rate: 0.001        # 降级时固定费率
+
+  # ==================== 买卖价差 ====================
+  spread:
+    enabled: true
+    # 根据市值分档
+    tiers:
+      - market_cap_range: [0, 50]        # 小盘股
+        spread: 0.003
+      - market_cap_range: [50, 200]      # 中盘股
+        spread: 0.002
+      - market_cap_range: [200, 1000]    # 大盘股
+        spread: 0.001
+      - market_cap_range: [1000, null]   # 超大盘
+        spread: 0.0005
+    default_spread: 0.002
+
+  # ==================== 总成本计算 ====================
+  total_cost:
+    # 买入总成本
+    buy_formula: "commission_buy + slippage + impact_cost + spread"
+    # 卖出总成本
+    sell_formula: "commission_sell + slippage + impact_cost + spread"
+
+  # ==================== 敏感性测试 ====================
+  sensitivity:
+    enabled: true
+    # 滑点敏感性
+    slippage_values: [0.0005, 0.001, 0.002, 0.003]
+    # 冲击成本系数敏感性
+    impact_coefficient_values: [0.05, 0.1, 0.2]
+    # 总成本上限告警
+    cost_warning_threshold: 0.005  # 单次交易成本>0.5%告警
+
+# ==================== 回测默认值 ====================
+backtest_defaults:
+  slippage: 0.001              # 必须包含>=0.1%滑点
+  include_impact: true
+  include_spread: true
